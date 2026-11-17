@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -44,13 +44,13 @@ def _print_changes(changes: list[dict]) -> None:
 def edit(
     input: Annotated[Path, typer.Argument(exists=True, dir_okay=False, help="Input .docx")],
     instruction: Annotated[str, typer.Argument(help="What to change, in natural language")],
-    output: Annotated[Optional[Path], typer.Option("-o", "--output", help="Output .docx")] = None,
-    model: Annotated[Optional[str], typer.Option(help="OpenAI model (default from env)")] = None,
+    output: Annotated[Path | None, typer.Option("-o", "--output", help="Output .docx")] = None,
+    model: Annotated[str | None, typer.Option(help="OpenAI model (default from env)")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Print the outcome as JSON")] = False,
 ) -> None:
     """Edit INPUT according to INSTRUCTION and write the result to --output."""
-    from .config import get_settings
     from .agent.llm import make_llm
+    from .config import get_settings
     from .service import EditService
 
     settings = get_settings()

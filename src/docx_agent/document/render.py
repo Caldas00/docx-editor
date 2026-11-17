@@ -1,0 +1,381 @@
+"""HTML preview of a document, optionally with a redline of an edit.
+
+This is an *approximate* rendering for the web UI (headings, lists, inline
+formatting, tables, images, links). The redline reuses the oracle's character
+alignment, so what is highlighted is exactly what the plan changed.
+"""
+
+from __future__ import annotations
+
+import base64
+import html
+import mimetypes
+import re
+from dataclasses import dataclass
+
+from lxml import etree
+
+from .model import Piece, list_level, paragraph_style, paragraph_view
+from .ns import R_EMBED, W, qn
+from .ops import EditPlan
+from .oracle import Expected, document_stream, expected_document
+from .package import DocxPackage
+
+A_BLIP = qn("a:blip")
+WP_EXTENT = qn("wp:extent")
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
+
+
+@dataclass
+class _Char:
+    ch: str
+    piece: Piece
+    status: str  # "same" | "ins" | "del" | "fmt"
+
+
+def _on(el) -> bool:
+    return el is not None and el.get(W.val, "true") not in ("0", "false", "off", "none")
+
+
+def _run_css(run: etree._Element | None) -> tuple[list[str], list[str]]:
+    """(css declarations, wrapper tags) for a run's direct formatting."""
+    css: list[str] = []
+    tags: list[str] = []
+    if run is None:
+        return css, tags
+    rpr = run.find(W.rPr)
+    if rpr is None:
+        return css, tags
+    if _on(rpr.find(W.b)):
+        tags.append("strong")
+    if _on(rpr.find(W.i)):
+        tags.append("em")
+    u = rpr.find(W.u)
+    if u is not None and u.get(W.val, "single") != "none":
+        css.append("text-decoration:underline")
+    if _on(rpr.find(W.strike)):
+        css.append("text-decoration:line-through")
+    color = rpr.find(W.color)
+    if color is not None and color.get(W.val) not in (None, "auto"):
+        css.append(f"color:#{color.get(W.val)}")
+    hl = rpr.find(W.highlight)
+    if hl is not None and hl.get(W.val) not in (None, "none"):
+        css.append(f"background:{_HIGHLIGHT.get(hl.get(W.val), '#fff59d')}")
+    sz = rpr.find(W.sz)
+    if sz is not None and (sz.get(W.val) or "").isdigit():
+        css.append(f"font-size:{int(sz.get(W.val)) / 2:.1f}pt")
+    return css, tags
+
+
+_HIGHLIGHT = {"yellow": "#fff59d", "green": "#c8f7c5", "cyan": "#b2f5ff", "magenta": "#f8c4f5",
+              "lightGray": "#e5e7eb", "red": "#fecaca", "blue": "#bfdbfe"}
+
+
+class Renderer:
+    def __init__(self, pkg: DocxPackage) -> None:
+        self.pkg = pkg
+        self._img_cache: dict[str, str] = {}
+
+    # ---------------------------------------------------------------- pieces
+    def _image(self, node: etree._Element) -> str:
+        blip = node.find(".//" + A_BLIP)
+        rid = blip.get(R_EMBED) if blip is not None else None
+        part = self.pkg.resolve_part(rid) if rid else None
+        if not part or part not in self.pkg.parts:
+            return '<span class="img-placeholder">image</span>'
+        if part not in self._img_cache:
+            data = self.pkg.parts[part]
+            if len(data) > MAX_IMAGE_BYTES:
+                return '<span class="img-placeholder">large image</span>'
+            mime = mimetypes.guess_type(part)[0] or "image/png"
+            self._img_cache[part] = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+        width = ""
+        ext = node.find(".//" + WP_EXTENT)
+        if ext is not None and (ext.get("cx") or "").isdigit():
+            width = f' style="width:{min(int(ext.get("cx")) / 9525, 640):.0f}px"'
+        return f'<img src="{self._img_cache[part]}" alt="image"{width}>'
+
+    def _protected_html(self, piece: Piece) -> str:
+        if piece.label == "TAB":
+            return '<span class="tab"></span>'
+        if piece.label == "BR":
+            return "<br>"
+        if piece.label == "PAGE_BREAK":
+            return '<span class="page-break" title="Page break"></span>'
+        if piece.label == "IMAGE":
+            return self._image(piece.node)
+        if piece.label in ("FIELD", "TRACKED_CHANGE", "CONTENT_CONTROL"):
+            cls = piece.label.lower().replace("_", "-")
+            return f'<span class="{cls}" title="{piece.label.title()} (protected)">' \
+                   f"{html.escape(piece.text)}</span>"
+        return f'<span class="protected">{html.escape(piece.text)}</span>'
+
+    def _chars_html(self, chars: list[_Char]) -> str:
+        out: list[str] = []
+        i = 0
+        while i < len(chars):
+            c = chars[i]
+            pc = c.piece
+            if pc.kind == "protected":
+                j = i
+                while j < len(chars) and chars[j].piece is pc and chars[j].status == c.status:
+                    j += 1
+                inner = self._protected_html(pc)
+                out.append(self._wrap_status(inner, c.status))
+                i = j
+                continue
+            j = i
+            while (j < len(chars) and chars[j].piece.kind == "text"
+                   and chars[j].piece.run is pc.run and chars[j].status == c.status
+                   and chars[j].piece.container is pc.container):
+                j += 1
+            text = html.escape("".join(x.ch for x in chars[i:j]))
+            css, tags = _run_css(pc.run)
+            for t in tags:
+                text = f"<{t}>{text}</{t}>"
+            if css:
+                text = f'<span style="{";".join(css)}">{text}</span>'
+            if pc.container.tag == W.hyperlink:
+                text = f'<a class="link">{text}</a>'
+            out.append(self._wrap_status(text, c.status))
+            i = j
+        return "".join(out)
+
+    @staticmethod
+    def _wrap_status(inner: str, status: str) -> str:
+        if status == "ins":
+            return f"<ins>{inner}</ins>"
+        if status == "del":
+            return f"<del>{inner}</del>"
+        if status == "fmt":
+            return f'<span class="fmt-changed" title="Formatting changed">{inner}</span>'
+        return inner
+
+    # ------------------------------------------------------------- paragraphs
+    def _para_open(self, p: etree._Element, extra_cls: str = "") -> tuple[str, str]:
+        style = paragraph_style(self.pkg, p)
+        low = style.lower()
+        cls = ["para"]
+        tag = "p"
+        if low == "title":
+            tag = "h1"
+            cls.append("title")
+        elif low.startswith("heading"):
+            level = "".join(ch for ch in low if ch.isdigit()) or "1"
+            tag = f"h{min(int(level) + 1, 6)}"
+        elif "quote" in low:
+            cls.append("quote")
+        lvl = list_level(p)
+        if lvl is not None or low.startswith("list"):
+            cls.append("list-item")
+            cls.append("numbered" if "number" in low else "bulleted")
+            cls.append(f"lvl-{lvl or 0}")
+        ppr = p.find(W.pPr)
+        jc = ppr.find(qn("w:jc")) if ppr is not None else None
+        style_attr = ""
+        if jc is not None and jc.get(W.val) in ("center", "right", "both"):
+            align = {"both": "justify"}.get(jc.get(W.val), jc.get(W.val))
+            style_attr = f' style="text-align:{align}"'
+        if extra_cls:
+            cls.append(extra_cls)
+        return f'<{tag} class="{" ".join(cls)}"{style_attr}>', f"</{tag}>"
+
+    def paragraph(self, p: etree._Element, chars: list[_Char] | None = None,
+                  extra_cls: str = "") -> str:
+        if chars is None:
+            chars = [_Char(ch, pc, "same") for pc in paragraph_view(p).pieces for ch in pc.text]
+        open_tag, close_tag = self._para_open(p, extra_cls)
+        body = self._chars_html(chars) or "&nbsp;"
+        return f"{open_tag}{body}{close_tag}"
+
+    # ------------------------------------------------------------------ tables
+    @staticmethod
+    def _cell_attrs(tc: etree._Element) -> tuple[str, bool]:
+        tcpr = tc.find(W.tcPr)
+        attrs, hidden = "", False
+        if tcpr is not None:
+            span = tcpr.find(W.gridSpan)
+            if span is not None and (span.get(W.val) or "").isdigit():
+                attrs += f' colspan="{span.get(W.val)}"'
+            vm = tcpr.find(W.vMerge)
+            if vm is not None and vm.get(W.val) in (None, "continue"):
+                hidden = True
+            shd = tcpr.find(qn("w:shd"))
+            if shd is not None and shd.get(qn("w:fill")) not in (None, "auto"):
+                attrs += f' style="background:#{shd.get(qn("w:fill"))}"'
+        return attrs, hidden
+
+
+def _table_html(r: Renderer, tbl: etree._Element, para_html: dict[int, str]) -> str:
+    rows = []
+    for tr in tbl.findall(W.tr):
+        cells = []
+        for tc in tr.findall(W.tc):
+            attrs, hidden = r._cell_attrs(tc)
+            if hidden:
+                continue
+            inner = []
+            for child in tc:
+                if child.tag == W.p:
+                    inner.append(para_html.get(id(child)) or r.paragraph(child))
+                elif child.tag == W.tbl:
+                    inner.append(_table_html(r, child, para_html))
+            cells.append(f"<td{attrs}>{''.join(inner)}</td>")
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+    return f'<table class="doc-table">{"".join(rows)}</table>'
+
+
+def _body_html(r: Renderer, pkg: DocxPackage, para_html: dict[int, str]) -> str:
+    out: list[str] = []
+    for child in pkg.body:
+        if child.tag == W.p:
+            out.append(para_html.get(id(child)) or r.paragraph(child))
+        elif child.tag == W.tbl:
+            out.append(_table_html(r, child, para_html))
+    return "".join(out)
+
+
+def render_preview(pkg: DocxPackage) -> str:
+    r = Renderer(pkg)
+    return _body_html(r, pkg, {})
+
+
+def render_redline(before: DocxPackage, after: DocxPackage, plan: EditPlan) -> str:
+    """Render ``after`` with insertions/deletions/formatting changes marked."""
+    expected, deleted_ids = expected_document(before, plan)
+    actual = document_stream(after)
+    r_after = Renderer(after)
+    r_before = Renderer(before)
+    para_html: dict[int, str] = {}
+    if [e.kind for e in expected] != [a.kind for a in actual]:
+        return render_preview(after)  # verification would have failed; show plain
+
+    for exp, act in zip(expected, actual):
+        if exp.kind != "p":
+            continue
+        if exp.before is None:
+            para_html[id(act.element)] = r_after.paragraph(act.element, extra_cls="block-ins",
+                                                           chars=_all(act.element, "ins"))
+        elif exp.modified:
+            para_html[id(act.element)] = r_after.paragraph(
+                act.element, chars=_merge(exp, exp.before.element, act.element))
+
+    # deleted paragraphs: show them (struck through) where they used to be
+    if deleted_ids:
+        _place_deleted(after, before, expected, actual, deleted_ids, r_before, para_html)
+    return _body_html(r_after, after, para_html)
+
+
+def _all(p: etree._Element, status: str) -> list[_Char]:
+    return [_Char(ch, pc, status) for pc in paragraph_view(p).pieces for ch in pc.text]
+
+
+def _merge(exp: Expected, b_el: etree._Element, a_el: etree._Element) -> list[_Char]:
+    b_chars = [(ch, pc) for pc in paragraph_view(b_el).pieces for ch in pc.text]
+    a_chars = [(ch, pc) for pc in paragraph_view(a_el).pieces for ch in pc.text]
+    chars = exp.chars or []
+    # origin of the next kept character at or after each position (to emit deletions
+    # before the insertions that replace them: "~~old~~ new", like a redline)
+    next_kept = [len(b_chars)] * (len(chars) + 1)
+    for i in range(len(chars) - 1, -1, -1):
+        o = chars[i].origin
+        next_kept[i] = o if o is not None else next_kept[i + 1]
+    out: list[_Char] = []
+    k = 0  # next before index not yet emitted
+    for i, (oc, (ch, pc)) in enumerate(zip(chars, a_chars)):
+        if oc.origin is None:
+            while k < next_kept[i]:
+                out.append(_Char(b_chars[k][0], b_chars[k][1], "del"))
+                k += 1
+            out.append(_Char(ch, pc, "ins"))
+            continue
+        while k < oc.origin:
+            out.append(_Char(b_chars[k][0], b_chars[k][1], "del"))
+            k += 1
+        k = oc.origin + 1
+        out.append(_Char(ch, pc, "fmt" if oc.forced else "same"))
+    while k < len(b_chars):
+        out.append(_Char(b_chars[k][0], b_chars[k][1], "del"))
+        k += 1
+    return _tidy(out)
+
+
+_TOKEN = re.compile(r"\w+|\s+|[^\w\s]", re.UNICODE)
+
+
+def _fmt_key(c: _Char) -> tuple[bytes, str]:
+    run = c.piece.run
+    rpr = run.find(W.rPr) if run is not None else None
+    return (etree.tostring(rpr, method="c14n") if rpr is not None else b"", c.piece.container.tag)
+
+
+def _tokens(chars: list[_Char]) -> list[list[_Char]]:
+    text = "".join(c.ch for c in chars)
+    return [chars[m.start():m.end()] for m in _TOKEN.finditer(text)]
+
+
+def _same_token(a: list[_Char], b: list[_Char]) -> bool:
+    return ("".join(c.ch for c in a) == "".join(c.ch for c in b)
+            and all(_fmt_key(x) == _fmt_key(y) for x, y in zip(a, b)))
+
+
+def _tidy(chars: list[_Char]) -> list[_Char]:
+    """Display-only: inside each replaced span, show words that are identical (same text
+    and same formatting) before and after as unchanged, e.g. ~~6~~7 of 12 rather than
+    ~~6 of 12~~7 of 12."""
+    out: list[_Char] = []
+    i = 0
+    while i < len(chars):
+        if chars[i].status not in ("del", "ins"):
+            out.append(chars[i])
+            i += 1
+            continue
+        j = i
+        while j < len(chars) and chars[j].status in ("del", "ins"):
+            j += 1
+        dels = _tokens([c for c in chars[i:j] if c.status == "del"])
+        inss = _tokens([c for c in chars[i:j] if c.status == "ins"])
+        pre = 0
+        while pre < min(len(dels), len(inss)) and _same_token(dels[pre], inss[pre]):
+            pre += 1
+        suf = 0
+        while (suf < min(len(dels), len(inss)) - pre
+               and _same_token(dels[-1 - suf], inss[-1 - suf])):
+            suf += 1
+        same = lambda toks: [_Char(c.ch, c.piece, "same") for t in toks for c in t]  # noqa: E731
+        out += same(inss[:pre])
+        out += [c for t in dels[pre:len(dels) - suf] for c in t]
+        out += [c for t in inss[pre:len(inss) - suf] for c in t]
+        out += same(inss[len(inss) - suf:])
+        i = j
+    return out
+
+
+def _place_deleted(after, before, expected, actual, deleted_ids, r_before, para_html) -> None:
+    from .model import build_index
+
+    b_index = build_index(before)
+    # map before element -> after element for surviving original paragraphs
+    surv: list[tuple[etree._Element, etree._Element]] = [
+        (e.before.element, a.element) for e, a in zip(expected, actual)
+        if e.kind == "p" and e.before is not None
+    ]
+    order = [b.element for b in b_index.paragraphs()]
+    pos = {id(el): i for i, el in enumerate(order)}
+    for bid in deleted_ids:
+        blk = b_index.get(bid)
+        if blk is None:
+            continue
+        html_del = r_before.paragraph(blk.element, chars=_all(blk.element, "del"),
+                                      extra_cls="block-del")
+        idx = pos[id(blk.element)]
+        prev = [a for b, a in surv if pos.get(id(b), -1) < idx]
+        anchor = prev[-1] if prev else (surv[0][1] if surv else None)
+        if anchor is None:
+            continue
+        key = id(anchor)
+        if prev:
+            # attach after the previous surviving paragraph's html
+            para_html[key] = (para_html.get(key) or Renderer(after).paragraph(anchor)) + html_del
+        else:
+            para_html[key] = html_del + (para_html.get(key) or Renderer(after).paragraph(anchor))

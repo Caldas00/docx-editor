@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "docx-agent-web",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["PYTHONPATH=src", "uv", "run", "--no-sync", "python", "-m", "docx_agent.cli", "serve", "--port", "8765"],
+      "port": 8765
+    }
+  ]
+}

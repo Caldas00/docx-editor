@@ -1,0 +1,26 @@
+{
+  "summary": "Updated the clinician name throughout, changed the session number, and added the new grounding exercise to the interventions list.",
+  "operations": [
+    {
+      "op": "replace_text",
+      "block_id": null,
+      "find": "Dr. Maya Ferreira",
+      "replace_with": "Dr. Ana Costa",
+      "occurrence": "all"
+    },
+    {
+      "op": "replace_text",
+      "block_id": "t0.r2.c1.p0",
+      "find": "6 of 12",
+      "replace_with": "7 of 12",
+      "occurrence": null
+    },
+    {
+      "op": "insert_paragraph",
+      "target_id": "p10",
+      "position": "after",
+      "text": "Grounding exercise (5-4-3-2-1)",
+      "format_like": "p10"
+    }
+  ]
+}

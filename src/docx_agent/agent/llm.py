@@ -20,7 +20,10 @@ def make_llm(settings: Settings | None = None, model: str | None = None) -> Base
     name = model or settings.model
     kwargs: dict = {"model": name, "timeout": settings.request_timeout, "max_retries": 2}
     if is_reasoning_model(name):
-        kwargs["reasoning_effort"] = "low"
+        # Reasoning models only accept function tools together with reasoning on the
+        # Responses API.
+        kwargs["use_responses_api"] = True
+        kwargs["reasoning"] = {"effort": settings.reasoning_effort}
     else:
         kwargs["temperature"] = 0
     return ChatOpenAI(**kwargs)

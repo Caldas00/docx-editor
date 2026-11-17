@@ -29,8 +29,8 @@ from lxml import etree
 
 from .model import _on, paragraph_view
 from .ns import MC, W
-from .oracle import Expected, OracleError, StreamItem, document_stream, expected_document
 from .ops import EditPlan, _strip_revision_markup
+from .oracle import Expected, OracleError, StreamItem, document_stream, expected_document
 from .package import DocxError, DocxPackage
 
 

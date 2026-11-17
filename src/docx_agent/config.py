@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DEFAULT_MODEL = "gpt-4.1"
+DEFAULT_MODEL = "gpt-5.5"
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,7 @@ class Settings:
     # must use search/read tools.
     outline_chars: int = int(os.getenv("DOCX_AGENT_OUTLINE_CHARS", "60000"))
     request_timeout: float = float(os.getenv("DOCX_AGENT_TIMEOUT", "90"))
+    reasoning_effort: str = os.getenv("DOCX_AGENT_REASONING_EFFORT", "low")
 
 
 def get_settings() -> Settings:

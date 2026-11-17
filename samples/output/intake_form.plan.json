@@ -1,0 +1,12 @@
+{
+  "summary": "Updated the preferred name to Sam.",
+  "operations": [
+    {
+      "op": "replace_text",
+      "block_id": "t0.r1.c1.p0",
+      "find": "Alex",
+      "replace_with": "Sam",
+      "occurrence": null
+    }
+  ]
+}
