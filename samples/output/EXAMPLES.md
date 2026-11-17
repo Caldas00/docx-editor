@@ -20,7 +20,7 @@ Input: `samples/input/session_note.docx` → output: `samples/output/session_not
 Verification:
 
 - ✅ Output is a valid .docx — re-opened with lxml and python-docx
-- ✅ Styles, headers/footers, media and all other parts untouched — 22 parts copied byte-for-byte
+- ✅ Styles, media, metadata and other parts untouched — 22 parts copied byte-for-byte
 - ✅ Block structure matches the plan — 54 blocks
 - ✅ Untouched blocks are XML-identical — 50 blocks compared
 - ✅ Edited text matches the plan exactly
@@ -46,7 +46,7 @@ Input: `samples/input/referral_letter.docx` → output: `samples/output/referral
 Verification:
 
 - ✅ Output is a valid .docx — re-opened with lxml and python-docx
-- ✅ Styles, headers/footers, media and all other parts untouched — 19 parts copied byte-for-byte
+- ✅ Styles, media, metadata and other parts untouched — 19 parts copied byte-for-byte
 - ✅ Block structure matches the plan — 46 blocks
 - ✅ Untouched blocks are XML-identical — 43 blocks compared
 - ✅ Edited text matches the plan exactly
@@ -70,7 +70,7 @@ Input: `samples/input/intake_form.docx` → output: `samples/output/intake_form.
 Verification:
 
 - ✅ Output is a valid .docx — re-opened with lxml and python-docx
-- ✅ Styles, headers/footers, media and all other parts untouched — 16 parts copied byte-for-byte
+- ✅ Styles, media, metadata and other parts untouched — 16 parts copied byte-for-byte
 - ✅ Block structure matches the plan — 33 blocks
 - ✅ Untouched blocks are XML-identical — 32 blocks compared
 - ✅ Edited text matches the plan exactly
@@ -105,7 +105,7 @@ Input: `samples/input/api_reference.docx` → output: `samples/output/api_refere
 Verification:
 
 - ✅ Output is a valid .docx — re-opened with lxml and python-docx
-- ✅ Styles, headers/footers, media and all other parts untouched — 20 parts copied byte-for-byte
+- ✅ Styles, media, metadata and other parts untouched — 20 parts copied byte-for-byte
 - ✅ Block structure matches the plan — 60 blocks
 - ✅ Untouched blocks are XML-identical — 50 blocks compared
 - ✅ Edited text matches the plan exactly

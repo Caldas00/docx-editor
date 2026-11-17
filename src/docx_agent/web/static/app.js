@@ -16,7 +16,13 @@ const OPS = {
   format_text: ["style", "format"], restyle_text: ["style", "restyle"],
   delete_images: ["remove", "pictures removed"], delete_table_row: ["remove", "row removed"],
   insert_table_row: ["add", "new row"], delete_table: ["remove", "table removed"],
-  insert_table: ["add", "new table"],
+  insert_table: ["add", "new table"], move_blocks: ["edit", "moved"],
+  duplicate_blocks: ["add", "duplicated"], set_paragraph_format: ["style", "paragraph style"],
+  split_paragraph: ["edit", "split"], merge_paragraphs: ["edit", "merged"],
+  insert_page_break: ["add", "page break"], insert_table_column: ["add", "new column"],
+  delete_table_columns: ["remove", "columns removed"], blocks_to_table: ["add", "into a table"],
+  insert_hyperlink: ["edit", "link added"], remove_hyperlink: ["edit", "link removed"],
+  set_hyperlink_url: ["edit", "link changed"], create_header_footer: ["add", "header/footer"],
 };
 
 const ICON = {
@@ -264,7 +270,7 @@ function changeHtml(c) {
   let text;
   if (c.before == null) text = `<ins>${esc(c.after)}</ins>`;
   else if (c.after == null) text = `<del>${esc(c.before)}</del>`;
-  else if (c.op === "format_text" || c.op === "restyle_text") text = esc(c.after.length > 160 ? c.after.slice(0, 160) + "…" : c.after);
+  else if (["format_text", "restyle_text", "set_paragraph_format", "move_blocks", "split_paragraph", "merge_paragraphs", "insert_hyperlink", "remove_hyperlink", "set_hyperlink_url"].includes(c.op)) text = esc(c.after.length > 160 ? c.after.slice(0, 160) + "…" : c.after);
   else text = inlineDiff(c.before, c.after);
   return `<li><span class="op ${cls}">${esc(label)}</span>${text}</li>`;
 }

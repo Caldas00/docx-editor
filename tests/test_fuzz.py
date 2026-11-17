@@ -24,7 +24,66 @@ def random_op(rng: random.Random, pkg: DocxPackage) -> dict | None:
     text = paragraph_view(block.element).text
     kind = rng.choice(["replace", "replace", "delete", "insert_text", "insert_par",
                        "delete_par", "format", "restyle", "images", "rows", "insert_row",
-                       "delete_table", "new_table"])
+                       "delete_table", "new_table", "move", "duplicate", "style", "split",
+                       "merge", "page_break", "add_col", "del_col", "to_table", "link",
+                       "unlink", "relink", "footer"])
+    blocks_and_tables = blocks + tables
+    if kind in ("move", "duplicate"):
+        chosen = rng.sample(blocks_and_tables, min(len(blocks_and_tables), rng.randint(1, 3)))
+        op = {"op": "move_blocks" if kind == "move" else "duplicate_blocks",
+              "block_ids": [b.id for b in chosen], "target_id": rng.choice(blocks_and_tables).id,
+              "position": rng.choice(["before", "after"])}
+        if kind == "duplicate" and rng.random() < 0.5:
+            op["target_id"] = None
+        return op
+    if kind == "style":
+        return {"op": "set_paragraph_format", "block_ids": [block.id],
+                "style": rng.choice([None, "Heading 1", "Heading 2", "Normal", "Title"]),
+                "align": rng.choice([None, "center", "justify"]),
+                "remove_numbering": rng.choice([False, True])}
+    if kind == "split" and len(text) > 2:
+        a = rng.randrange(1, len(text))
+        at = text[a:a + rng.randint(1, 10)]
+        return {"op": "split_paragraph", "block_id": block.id, "at": at,
+                "occurrence": 1 if text.count(at) > 1 else None}
+    if kind == "merge":
+        sibs = [b for b in blocks if b.element.getparent() is block.element.getparent()]
+        i = sibs.index(block)
+        group = sibs[i:i + rng.randint(2, 3)]
+        return {"op": "merge_paragraphs", "block_ids": [b.id for b in group],
+                "separator": rng.choice([" ", "", " - "])} if len(group) > 1 else None
+    if kind == "page_break":
+        return {"op": "insert_page_break", "target_id": rng.choice(blocks_and_tables).id,
+                "position": rng.choice(["before", "after"])}
+    if kind in ("add_col", "del_col") and tables:
+        t = rng.choice(tables)
+        if kind == "add_col":
+            return {"op": "insert_table_column", "table_id": t.id,
+                    "column": rng.randrange(max(t.cols, 1)),
+                    "position": rng.choice(["before", "after"]),
+                    "cells": [rng.choice(WORDS) for _ in range(t.rows)]}
+        return {"op": "delete_table_columns", "table_id": t.id,
+                "columns": rng.sample(range(max(t.cols, 1)), 1)}
+    if kind == "to_table":
+        sibs = [b for b in blocks_and_tables
+                if b.element.getparent() is block.element.getparent()]
+        i = sibs.index(block)
+        return {"op": "blocks_to_table", "block_ids": [b.id for b in sibs[i:i + rng.randint(1, 4)]],
+                "columns": rng.randint(1, 2),
+                "table_like": rng.choice([None] + [t.id for t in tables])}
+    if kind in ("link", "unlink", "relink") and text:
+        a = rng.randrange(len(text))
+        find = text[a:min(len(text), a + rng.randint(1, 12))]
+        occ = 1 if text.count(find) > 1 else None
+        if kind == "link":
+            return {"op": "insert_hyperlink", "block_id": block.id, "find": find,
+                    "url": "https://example.org/x", "occurrence": occ}
+        return {"op": "remove_hyperlink" if kind == "unlink" else "set_hyperlink_url",
+                "block_id": block.id, "find": find, "occurrence": occ,
+                **({"url": "https://example.org/y"} if kind == "relink" else {})}
+    if kind == "footer":
+        return {"op": "create_header_footer", "kind": rng.choice(["header", "footer"]),
+                "text": rng.choice(["", "Lumen"]), "page_numbers": rng.choice([True, False])}
     if kind == "new_table":
         ncols = rng.randint(1, 3)
         return {"op": "insert_table", "target_id": rng.choice([block.id] + [t.id for t in tables]),
@@ -89,7 +148,7 @@ def test_random_plans_never_corrupt(doc, request):
     data = request.getfixturevalue(doc)
     rng = random.Random(1234)
     applied = refused = 0
-    for _ in range(250):
+    for _ in range(400):
         pkg = DocxPackage(data)
         ops = [op for op in (random_op(rng, pkg) for _ in range(rng.randint(1, 3))) if op]
         if not ops:
@@ -108,4 +167,4 @@ def test_random_plans_never_corrupt(doc, request):
         assert report.passed, f"{ops}\n{report.summary()}"
         applied += 1
     print(f"\n{doc}: applied={applied} refused={refused}")
-    assert applied > 100, (applied, refused)
+    assert applied > 150, (applied, refused)

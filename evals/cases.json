@@ -595,5 +595,241 @@
         "Goal"
       ]
     }
+  },
+  {
+    "id": "add-footer-page-numbers",
+    "doc": "referral_letter.docx",
+    "instruction": "adiciona rodapés com o número da página",
+    "expect": {
+      "status": "done",
+      "footer_page_number": true,
+      "max_changed": 0
+    }
+  },
+  {
+    "id": "new-page-before-table",
+    "doc": "referral_letter.docx",
+    "instruction": "adiciona uma nova página antes de 'Current summary:'",
+    "expect": {
+      "status": "done",
+      "page_breaks": 1,
+      "order": [
+        [
+          "⟦PAGE BREAK⟧",
+          "Current summary:"
+        ]
+      ],
+      "max_changed": 1
+    }
+  },
+  {
+    "id": "move-selection-to-end-new-page",
+    "doc": "session_note.docx",
+    "selection": {
+      "text": "Risk assessment: No current risk indicators. Review again next session.",
+      "blocks": [
+        "p6"
+      ]
+    },
+    "instruction": "passa isto para o final do documento numa nova página",
+    "expect": {
+      "status": "done",
+      "page_breaks": 2,
+      "order": [
+        [
+          "Bring the record to the next session.",
+          "Risk assessment:"
+        ]
+      ],
+      "count": [
+        [
+          "Risk assessment:",
+          1
+        ]
+      ]
+    }
+  },
+  {
+    "id": "paragraphs-into-table",
+    "doc": "api_reference.docx",
+    "instruction": "Put the four '- ...' description lines (Include the SDK header, Use the SDK namespace, Create a reader, Load a session file) into a table.",
+    "expect": {
+      "status": "done",
+      "table_rows": [
+        4,
+        8
+      ],
+      "doc_contains": [
+        "- Include the SDK header",
+        "- Load a session file"
+      ]
+    }
+  },
+  {
+    "id": "join-list-into-one-paragraph",
+    "doc": "session_note.docx",
+    "instruction": "junta os três pontos das intervenções num só parágrafo",
+    "expect": {
+      "status": "done",
+      "same_paragraph": [
+        [
+          "catastrophic predictions",
+          "next team meeting"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "split-paragraph",
+    "doc": "session_note.docx",
+    "instruction": "Split the presenting concerns paragraph after its first sentence.",
+    "expect": {
+      "status": "done",
+      "starts_paragraph": [
+        "Work-related anxiety"
+      ],
+      "doc_contains": [
+        "fewer night-time awakenings."
+      ]
+    }
+  },
+  {
+    "id": "heading-level",
+    "doc": "session_note.docx",
+    "instruction": "Make 'Appendix A. Homework agreed' a level 1 heading.",
+    "expect": {
+      "status": "done",
+      "style_of": [
+        [
+          "Appendix A. Homework agreed",
+          "Heading 1"
+        ]
+      ],
+      "max_changed": 0
+    }
+  },
+  {
+    "id": "reorder-sections",
+    "doc": "session_note.docx",
+    "instruction": "Move the whole '5. Plan' section (heading and everything under it up to the appendix) so it comes before '4. Progress overview'.",
+    "expect": {
+      "status": "done",
+      "order": [
+        [
+          "5. Plan",
+          "4. Progress overview"
+        ],
+        [
+          "Share the psychoeducation leaflet",
+          "4. Progress overview"
+        ],
+        [
+          "Figure 1.",
+          "Appendix A."
+        ]
+      ]
+    }
+  },
+  {
+    "id": "duplicate-paragraph",
+    "doc": "session_note.docx",
+    "instruction": "Duplicate the risk assessment paragraph.",
+    "expect": {
+      "status": "done",
+      "count": [
+        [
+          "Risk assessment:",
+          2
+        ]
+      ],
+      "bold": [
+        "Risk assessment:"
+      ]
+    }
+  },
+  {
+    "id": "add-table-column",
+    "doc": "referral_letter.docx",
+    "instruction": "Add a 'Trend' column after Status in the summary table, with Up, Same and Down for Sleep, Anxiety and Mood.",
+    "expect": {
+      "status": "done",
+      "table_cols": [
+        4
+      ],
+      "doc_contains": [
+        "Trend"
+      ]
+    }
+  },
+  {
+    "id": "delete-table-column",
+    "doc": "referral_letter.docx",
+    "instruction": "Remove the Notes column from the summary table.",
+    "expect": {
+      "status": "done",
+      "table_cols": [
+        2
+      ],
+      "doc_not_contains": [
+        "Fewer awakenings",
+        "Triggered by meetings"
+      ]
+    }
+  },
+  {
+    "id": "insert-hyperlink",
+    "doc": "session_note.docx",
+    "instruction": "Link 'psychoeducation leaflet' to https://example.org/leaflet",
+    "expect": {
+      "status": "done",
+      "link_targets": [
+        [
+          "psychoeducation leaflet",
+          "https://example.org/leaflet"
+        ]
+      ],
+      "max_changed": 0
+    }
+  },
+  {
+    "id": "remove-hyperlink",
+    "doc": "session_note.docx",
+    "instruction": "Remove the hyperlink from 'Sleep hygiene leaflet' but keep the text.",
+    "expect": {
+      "status": "done",
+      "no_link": [
+        "Sleep hygiene leaflet"
+      ],
+      "doc_contains": [
+        "Sleep hygiene leaflet"
+      ],
+      "max_changed": 0
+    }
+  },
+  {
+    "id": "edit-footer",
+    "doc": "session_note.docx",
+    "instruction": "In the footer, write 'Página' instead of 'Page'.",
+    "expect": {
+      "status": "done",
+      "hf_contains": [
+        "Página"
+      ],
+      "max_changed": 0
+    }
+  },
+  {
+    "id": "everything-into-a-table",
+    "doc": "intake_form.docx",
+    "instruction": "mete tudo numa tabela",
+    "expect": {
+      "status": "done",
+      "top_tables": 1,
+      "doc_contains": [
+        "Client Intake Form",
+        "Preferred name",
+        "I consent"
+      ]
+    }
   }
 ]

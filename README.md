@@ -47,9 +47,9 @@ uv run docx-agent apply samples/input/session_note.docx \
 **Tests and evals**
 
 ```bash
-uv run pytest                    # 150 offline tests (no network, about 15 s)
+uv run pytest                    # 183 offline tests (no network, about 30 s)
 uv run pytest -m llm             # end-to-end tests against the real API
-uv run python evals/run.py       # behavioural evals against the real API (36 cases)
+uv run python evals/run.py       # behavioural evals against the real API (51 cases)
 ```
 
 **Using the web UI**
@@ -81,7 +81,7 @@ src/docx_agent/
   document/            deterministic core (no LLM)
     package.py         opens the .docx zip, rewrites only word/document.xml
     model.py           text view: blocks with stable ids, paragraphs as "pieces"
-    ops.py             the 12 edit operations + run-level edit engine
+    ops.py             the 25 edit operations + run-level edit engine
     oracle.py          replays a plan on plain strings (independent model)
     verify.py          9 integrity checks: before vs. after vs. oracle
     render.py          HTML preview + redline for the UI
@@ -161,9 +161,21 @@ correction hint.
 | `insert_table_row` | Insert a row next to an existing one, one text per cell. It copies a template row's properties and each cell's first paragraph, never as a header row and never vertically merged. |
 | `delete_table` | Delete a whole table. |
 | `insert_table` | Create a new table from rows of cell texts, with an optional bold, repeating header row. It copies an existing table's look (`table_like`) or uses single borders across the text width, and adds an empty paragraph where Word needs one (between two tables, or at the end of the body or a cell). |
+| `insert_table_column` / `delete_table_columns` | Add a column (copying a column's cells) or delete columns, in tables without merged cells; the column grid is updated. |
+| `blocks_to_table` | Put existing consecutive paragraphs and tables into a new table, one block per cell ("put everything in a table"). The blocks keep their exact XML; tables become nested tables. |
+| `move_blocks` | Move paragraphs and tables (reorder, move a section, move to the end). The elements move unchanged, with pictures, links and fields. It is refused if it would leave two tables touching or a cell without a paragraph. |
+| `duplicate_blocks` | Copy paragraphs/tables. Copies drop bookmarks and comment anchors (which must be unique) and get fresh drawing ids. |
+| `set_paragraph_format` | Change a paragraph's style (heading levels, Normal, Title… only styles that exist in the document), its alignment, or remove list numbering. |
+| `split_paragraph` / `merge_paragraphs` | Split at an exact text, or join consecutive paragraphs into the first one. Inline formatting is kept on both sides. |
+| `insert_page_break` | A page break before or after a block ("new page"). Page-break paragraphs can also be deleted. |
+| `insert_hyperlink` / `remove_hyperlink` / `set_hyperlink_url` | Turn text into a link, unlink it while keeping the text, or change where a link points. Links get a new relationship; existing relationships are never changed. |
+| `create_header_footer` | Add a header or footer (text, optional page number, alignment) to sections that have none. Existing headers and footers are edited with the normal text operations (`ftr1.p0`, …). |
 
 Row ids keep their original numbering for the whole plan, so "delete r3, then insert after
-r5" means the rows the planner saw.
+r5" means the rows the planner saw. Templates are always taken from the original document,
+and deletions and duplicates apply only to blocks that are still exactly as they were. That
+makes the result independent of the order the operations are listed in. A plan that would
+violate this is refused with a message, so the planner splits it into two requests.
 
 ### Why it preserves formatting
 
@@ -182,8 +194,11 @@ control, footnote reference or equation. Then, for an edit:
   remove a tab or line break only if it covers it completely.
 - **An edit may not cross a hyperlink boundary.** Text typed next to a link is placed
   *outside* the link.
-- **Only the main document part is rewritten.** Styles, numbering, headers, footers, media,
-  comments and settings are copied from the input zip byte-for-byte.
+- **Only what an edit needs is rewritten.** That is `word/document.xml`, the header/footer
+  parts that were edited, and *additions* to the document's relationships and content types
+  (for new links and new headers/footers). Styles, numbering, media, comments, footnotes,
+  settings and metadata (`docProps`) are copied from the input zip byte-for-byte, and so are
+  headers and footers that were not edited.
 - **Inserted paragraphs copy their template paragraph.** They take a deep copy of its `pPr`
   (minus section breaks and tracked-change markup) and the `rPr` of its dominant run.
 
@@ -219,7 +234,7 @@ Python strings and tracks the origin of every character.
 9. OOXML structure rules hold: every table cell ends with a paragraph, and the body ends with
    its `sectPr`.
 
-**2. Offline test suite (150 tests, about 15 s, no network)**
+**2. Offline test suite (183 tests, about 30 s, no network)**
 
 - **Engine unit tests** (`test_ops.py`) cover each operation and each refusal. They use
   synthetic XML with split runs, hyperlinks, fields, tracked changes, content controls,
@@ -229,11 +244,15 @@ Python strings and tracks the origin of every character.
   buggy editor would, and check that the verifier catches each case. The tampering includes
   changing an untouched paragraph, dropping bold from an edited paragraph, adding text,
   restyling a new paragraph, deleting an image, deleting a paragraph and editing `styles.xml`.
-- **A fuzz test** (`test_fuzz.py`) runs 750 random plans, mixing all 12 operations, on three
-  sample documents. Each plan is either refused with an `EditError` or passes every check;
-  nothing is silently corrupted. About 440 of them are applied and verified. While the table
-  and restyle operations were being built, the fuzz test found four real interaction bugs,
-  e.g. a new table inside a row that a later operation deletes.
+- **A fuzz test** (`test_fuzz.py`) runs 1,200 random plans, mixing all 25 operations
+  (including headers/footers), on three sample documents. Each plan is either refused with an `EditError` or passes every check;
+  nothing is silently corrupted. About 670 of them are applied and verified. During
+  development it was also run with 30+ other seeds. It found about a dozen real interaction
+  bugs while the structural operations were being built, for example:
+  - a new table placed inside a row that a later operation deletes,
+  - content moved into a table that is then deleted,
+  - a template paragraph restyled before it is copied,
+  - pictures duplicated and then deleted.
 - **Graph tests** (`test_graph.py`) use a scripted LLM to exercise every route: happy path,
   exploration, error feedback and correction, schema errors, the retry limit, the
   clarification interrupt and resume, decline, nudge, the step limit and bad input.
@@ -250,7 +269,7 @@ Python strings and tracks the origin of every character.
 
 **3. Behavioural evals against the real model (`evals/`)**
 
-There are 36 cases across 4 documents, some of them multi-message conversations run
+There are 51 cases across 4 documents, some of them multi-message conversations run
 exactly as the web UI runs them. They cover replacements in table cells, global
 renames, list items, sentence and paragraph deletion, new sections (heading and body),
 formatting, multi-edit instructions, link text, a word split across runs, an ambiguous date
@@ -261,7 +280,11 @@ removing icons, deleting, inserting and removing table rows and tables, highligh
 instructions that refer to a selection ("make this bold", "traduz isto para português",
 "apaga" right after an unrelated question), new tables ("faz uma tabela … 1 até 10"), and
 follow-ups that only make sense with memory ("give it the same colour as the warning", "make
-it bold", answering the agent's question in a new message).
+it bold", answering the agent's question in a new message). They also cover structure:
+- reordering sections and moving a selection to the end on a new page,
+- duplicating, splitting and joining paragraphs, and changing heading levels,
+- adding and removing table columns, and turning paragraphs (or a whole document) into a table,
+- inserting and removing links, and editing or creating footers with page numbers.
 Each case checks the outcome: required and forbidden text, the styles of new paragraphs, bold
 or italic, colours present or absent, picture count, table row counts and no empty rows, how
 many paragraphs changed (to catch over-editing), no new double spaces, and that verification
@@ -270,7 +293,7 @@ passed. The runner also records token usage and estimated cost. Results are in
 
 | model | passed (× 3 runs) | median latency | avg cost / edit |
 |---|---|---|---|
-| **gpt-6-luna** (default, low reasoning) | **108/108** (36 cases) | 2.3 s | **$0.0001** |
+| **gpt-6-luna** (default, low reasoning) | **153/153** (51 cases) | 2.4 s | **$0.0001** |
 | gpt-5.4-mini | 90/90 (first 30 cases) | 2.2 s | $0.0012 |
 | gpt-5-mini | 90/90 (first 30 cases) | 3.3 s | $0.0007 |
 | gpt-5.5 (previous default) | 30/30 (1 run) | 2.3 s | $0.0118 |
@@ -305,8 +328,9 @@ header image, tables, lists, chart, caption and comment intact.
   paragraphs that hold bookmarks, and deleting rows that start a vertical merge all produce
   explicit errors or a decline. Pictures are only removed when the plan says so explicitly.
   The case brief values transparent limitations, and so does this design.
-- **Only `word/document.xml` is rewritten**, which turns "nothing else changed" into a
-  byte-level fact.
+- **Rewrite as little as possible.** Every part an edit does not need is copied
+  byte-for-byte, which turns "nothing else changed" into a byte-level fact. Relationships and
+  content types may only *gain* entries, and the verifier checks each added entry.
 - **A cheap model is enough because the hard part is deterministic.** The LLM only chooses
   operations; the engine and verifier do the risky work. `gpt-6-luna` passes the same suite as
   models costing 10-100× more. `DOCX_AGENT_MODEL` overrides it, and the UI shows the
@@ -314,12 +338,16 @@ header image, tables, lists, chart, caption and comment intact.
 
 ## Known limitations
 
-- **Main document body only.** Headers, footers, footnotes, comments and text boxes are
-  preserved but cannot be edited.
-- **Partial table and image support.** Rows and whole tables can be added or removed, but
-  columns and merged-cell layouts cannot be changed. Pictures can be deleted but not inserted,
-  resized or replaced. A deleted picture's media file stays in the package unreferenced (Word
-  ignores it), because only `word/document.xml` is ever rewritten.
+- **Footnotes, endnotes, comments and text boxes** are preserved but cannot be edited.
+  Headers and footers can be edited and created.
+- **Partial table and image support.** Merged cells are preserved, but they cannot be merged
+  or split, and columns cannot be added or removed in tables that contain merged cells.
+  Pictures can be deleted, moved and copied, but not inserted, resized or replaced. A deleted
+  picture's media file stays in the package unreferenced (Word ignores it), because media
+  parts are never rewritten.
+- **No new styles.** `set_paragraph_format` uses styles that already exist in the document.
+- **Fields and tables of contents are not updated.** Fields are protected, and Word updates
+  them (e.g. page numbers, a TOC) when the document is opened or printed.
 - **Text inside protected elements cannot be edited.** This covers tracked changes, content
   controls, fields and equations. The text around them can be edited.
 - **New text formatting is limited.** New text inherits the formatting where it is inserted.
@@ -331,6 +359,10 @@ header image, tables, lists, chart, caption and comment intact.
   as a table of contents, is treated per paragraph, so its entries look like editable text.
 - **Matching is exact.** There is no fuzzy matching; the agent relies on error feedback when
   an anchor is wrong.
+- **Some combinations are split into two requests.** Within one plan, a block that was
+  already changed cannot be duplicated or deleted, and a table cannot get both new rows and
+  new or deleted columns. The engine refuses these with an explanation, and the planner then
+  splits the work.
 - **The web UI is a local demo.** It has in-memory sessions and no authentication, and its
   HTML preview is approximate. The .docx output is the source of truth.
 - **The outline is capped at 60k characters** (configurable). Beyond that, the planner has to

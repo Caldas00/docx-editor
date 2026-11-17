@@ -22,6 +22,12 @@ _OP_WORDS = {
     "format_text": "formatted", "restyle_text": "restyled", "delete_images": "removed pictures",
     "delete_table_row": "removed table row", "insert_table_row": "added table row",
     "delete_table": "removed table", "insert_table": "added table",
+    "move_blocks": "moved", "duplicate_blocks": "duplicated", "set_paragraph_format":
+    "changed paragraph format", "split_paragraph": "split", "merge_paragraphs": "merged",
+    "insert_page_break": "added page break", "insert_table_column": "added column",
+    "delete_table_columns": "removed columns", "blocks_to_table": "put into a table",
+    "insert_hyperlink": "linked", "remove_hyperlink": "unlinked", "set_hyperlink_url":
+    "changed link", "create_header_footer": "created header/footer",
 }
 
 

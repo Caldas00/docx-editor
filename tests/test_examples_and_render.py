@@ -89,3 +89,9 @@ def test_redline_shows_deleted_table(api_reference_bytes):
     apply_plan(after, p)
     html = render_redline(before, after, p)
     assert "tbl-del" in html and "<del>get_client_id()</del>" in html
+
+
+def test_header_picture_is_rendered(session_note):
+    html = render_preview(session_note)
+    header = html.split('data-part="hdr1"', 1)[1].split("</div>", 1)[0]
+    assert "data:image/png;base64," in header

@@ -18,7 +18,7 @@ from lxml import etree
 from .model import Piece, build_index, list_level, paragraph_style, paragraph_view
 from .ns import R_EMBED, W, qn
 from .ops import EditPlan
-from .oracle import Expected, document_stream, replay
+from .oracle import Expected, StreamItem, document_stream, replay, stream_of
 from .package import DocxPackage
 
 A_BLIP = qn("a:blip")
@@ -95,7 +95,12 @@ class Renderer:
     def _image(self, node: etree._Element) -> str:
         blip = node.find(".//" + A_BLIP)
         rid = blip.get(R_EMBED) if blip is not None else None
-        part = self.pkg.resolve_part(rid) if rid else None
+        root = node
+        while root.getparent() is not None:
+            root = root.getparent()
+        owner = next((hf.part_name for hf in self.pkg.hf_parts if hf.root is root),
+                     self.pkg.main_part_name)
+        part = self.pkg.resolve_part_from(owner, rid) if rid else None
         if not part or part not in self.pkg.parts:
             return '<span class="img-placeholder">image</span>'
         if part not in self._img_cache:
@@ -271,14 +276,28 @@ def _table_html(r: Renderer, tbl: etree._Element, ov: _Overlay, extra_cls: str =
     return f'<table class="{cls}"{data}>{"".join(rows)}</table>'
 
 
-def _body_html(r: Renderer, pkg: DocxPackage, ov: _Overlay) -> str:
+def _blocks_html(r: Renderer, root: etree._Element, ov: _Overlay) -> str:
     out: list[str] = []
-    for child in pkg.body:
+    for child in root:
         if child.tag == W.p:
             out.append(ov.para_html.get(id(child)) or r.paragraph(child))
         elif child.tag == W.tbl:
             out.append(_table_html(r, child, ov))
     return "".join(out)
+
+
+def _body_html(r: Renderer, pkg: DocxPackage, ov: _Overlay,
+               created: set[str] | None = None) -> str:
+    """Headers, then the body, then footers (each header/footer part shown once)."""
+    created = created or set()
+    def part(hf) -> str:
+        cls = "hf block-ins" if hf.part_name in created else "hf"
+        return (f'<div class="{cls}" data-part="{html.escape(hf.label)}">'
+                f'<span class="hf-label">{hf.kind.capitalize()} · {html.escape("; ".join(hf.uses))}'
+                f"</span>{_blocks_html(r, hf.root, ov)}</div>")
+    heads = "".join(part(hf) for hf in pkg.hf_parts if hf.kind == "header")
+    feet = "".join(part(hf) for hf in pkg.hf_parts if hf.kind == "footer")
+    return heads + _blocks_html(r, pkg.body, ov) + feet
 
 
 def render_preview(pkg: DocxPackage) -> str:
@@ -288,55 +307,73 @@ def render_preview(pkg: DocxPackage) -> str:
 def render_redline(before: DocxPackage, after: DocxPackage, plan: EditPlan) -> str:
     """Render ``after`` with insertions/deletions/formatting changes marked."""
     oracle = replay(before, plan)
-    expected = oracle.entries
-    actual = document_stream(after)
-    if [e.kind for e in expected] != [a.kind for a in actual]:
-        return render_preview(after)  # verification would have failed; show plain
+    roots = {"body": after.body} | {hf.part_name: hf.root for hf in after.hf_parts}
+    pairs: list[tuple[Expected, StreamItem]] = []
+    for name, expected in oracle.lists.items():
+        actual = stream_of(roots[name]) if name in roots else []
+        if [e.kind for e in expected] != [a.kind for a in actual]:
+            return render_preview(after)  # verification would have failed; show plain
+        pairs.extend(zip(expected, actual))
     r_after = Renderer(after)
     r_before = Renderer(before, with_ids=False)
     ov = _Overlay()
-    for exp, act in zip(expected, actual):
+    for exp, act in pairs:
         if exp.kind == "tr" and exp.before is None:
             ov.row_cls[id(act.element)] = "row-ins"
         if exp.kind != "p":
             continue
-        if exp.before is None:
+        if exp.before is None and exp.spec.get("split"):
+            ov.para_html[id(act.element)] = r_after.paragraph(
+                act.element, chars=_merge(exp, None, act.element))
+        elif exp.before is None:
             ov.para_html[id(act.element)] = r_after.paragraph(
                 act.element, extra_cls="block-ins", chars=_all(act.element, "ins"))
         elif exp.modified:
             ov.para_html[id(act.element)] = r_after.paragraph(
-                act.element, chars=_merge(exp, exp.before.element, act.element))
-    _place_removed(oracle.removed, expected, actual, r_before, r_after, ov)
-    return _body_html(r_after, after, ov)
+                act.element, chars=_merge(exp, exp.before.element, act.element),
+                extra_cls="block-moved" if exp.spec.get("moved") else "")
+        elif exp.spec.get("moved"):
+            ov.para_html[id(act.element)] = r_after.paragraph(act.element,
+                                                              extra_cls="block-moved")
+    _place_removed(oracle.removed, [e for e, _ in pairs], [a for _, a in pairs],
+                   r_before, r_after, ov)
+    before_names = set(oracle.lists)
+    created = {hf.part_name for hf in after.hf_parts if hf.part_name not in before_names}
+    return _body_html(r_after, after, ov, created)
 
 
 def _all(p: etree._Element, status: str) -> list[_Char]:
     return [_Char(ch, pc, status) for pc in paragraph_view(p).pieces for ch in pc.text]
 
 
-def _merge(exp: Expected, b_el: etree._Element, a_el: etree._Element) -> list[_Char]:
-    b_chars = [(ch, pc) for pc in paragraph_view(b_el).pieces for ch in pc.text]
+def _merge(exp: Expected, b_el: etree._Element | None, a_el: etree._Element) -> list[_Char]:
+    """Characters of an edited paragraph with their redline status. Characters that came
+    from *another* paragraph (merge, split) are shown as unchanged text."""
+    b_chars = [(ch, pc) for pc in paragraph_view(b_el).pieces for ch in pc.text] \
+        if b_el is not None else []
     a_chars = [(ch, pc) for pc in paragraph_view(a_el).pieces for ch in pc.text]
     chars = exp.chars or []
+    own = [oc.origin if (oc.origin is not None and oc.src is b_el) else None for oc in chars]
     # origin of the next kept character at or after each position (to emit deletions
     # before the insertions that replace them: "~~old~~ new", like a redline)
     next_kept = [len(b_chars)] * (len(chars) + 1)
     for i in range(len(chars) - 1, -1, -1):
-        o = chars[i].origin
-        next_kept[i] = o if o is not None else next_kept[i + 1]
+        next_kept[i] = own[i] if own[i] is not None else next_kept[i + 1]
     out: list[_Char] = []
     k = 0  # next before index not yet emitted
     for i, (oc, (ch, pc)) in enumerate(zip(chars, a_chars)):
-        if oc.origin is None:
-            while k < next_kept[i]:
-                out.append(_Char(b_chars[k][0], b_chars[k][1], "del"))
-                k += 1
-            out.append(_Char(ch, pc, "ins"))
+        if own[i] is None:
+            if oc.origin is None:
+                while k < next_kept[i]:
+                    out.append(_Char(b_chars[k][0], b_chars[k][1], "del"))
+                    k += 1
+            out.append(_Char(ch, pc, "ins" if oc.origin is None
+                             else ("fmt" if oc.forced else "same")))
             continue
-        while k < oc.origin:
+        while k < own[i]:
             out.append(_Char(b_chars[k][0], b_chars[k][1], "del"))
             k += 1
-        k = oc.origin + 1
+        k = own[i] + 1
         out.append(_Char(ch, pc, "fmt" if oc.forced else "same"))
     while k < len(b_chars):
         out.append(_Char(b_chars[k][0], b_chars[k][1], "del"))

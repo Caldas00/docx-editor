@@ -6,7 +6,7 @@ average estimated USD per edit from the token usage the API reports and the list
 
 | model | passed | median latency | avg cost / edit | notes |
 |---|---|---|---|---|
-| **gpt-6-luna** (default) | **90/90** on 30 cases; **108/108** on the current 36 | 2.3-2.4 s | **$0.0001** | 89/90 before the colour-name table was added to the prompt (it picked a different purple) |
+| **gpt-6-luna** (default) | **90/90** on 30 cases; **153/153** on the current 51 | 2.3-2.4 s | **$0.0001** | 89/90 before the colour-name table was added to the prompt (it picked a different purple) |
 | gpt-5.4-mini | 90/90 | 2.2 s | $0.0012 | |
 | gpt-5-mini | 90/90 | 3.3 s | $0.0007 | |
 | gpt-5.5 (previous default) | 30/30 (1 run) | 2.3 s | $0.0118 | about 100× the cost of gpt-6-luna |

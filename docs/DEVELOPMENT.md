@@ -83,6 +83,28 @@ architecture discussion  →  vertical slice  →  verification harness  →  ev
    Five multi-message eval cases now pin the behaviour down (108/108). The fuzz test caught
    two more table edge cases along the way.
 
+9. **Fourth iteration: structural editing.** The feature list asked for the following
+   (and three failing chat requests: "add footers", "add a new page", "put everything in a
+   table"):
+   - moving, duplicating, splitting and joining paragraphs;
+   - heading levels and paragraph styles;
+   - page breaks, table columns and hyperlinks;
+   - headers and footers.
+
+   Two pieces of infrastructure came first:
+   - **Editable package:** headers/footers are parsed and edited like the body, and
+     relationships and content types can *gain* entries.
+   - **Multi-part oracle:** the oracle tracks one block list per part, plus where every
+     character comes from (needed for merge and split).
+
+   Then each operation got engine code, oracle code, verifier rules, unit tests,
+   mutation tests and eval cases. The fuzz test was run with 30+ seeds and found about a
+   dozen real bugs, all in how operations interact within one plan. The fixes were
+   design rules rather than patches:
+   - templates always come from the original document;
+   - only pristine blocks can be deleted or duplicated;
+   - removed elements are counted once.
+
 ## 2. How AI-generated code is verified
 
 The core idea is to make correctness **checkable by a machine**, so that "the agent says it

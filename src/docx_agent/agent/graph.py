@@ -132,6 +132,8 @@ class DocxEditAgent:
             n_blocks=len(index.blocks),
             truncated=' truncated="true"' if truncated else "",
             outline=outline,
+            styles=", ".join(sorted(n[:1].upper() + n[1:]
+                                    for n in pkg.paragraph_styles.values())[:60]) or "Normal",
         ))
         ai = self.llm.invoke([system, *state["messages"]])
         usage = dict(state.get("usage") or {"input": 0, "output": 0, "cached": 0})

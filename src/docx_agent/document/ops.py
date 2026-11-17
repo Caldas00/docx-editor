@@ -35,8 +35,16 @@ from .model import (
     paragraph_view,
     run_props,
 )
-from .ns import XML_SPACE, W, qn
-from .package import DocxPackage
+from .ns import R_ID, XML_SPACE, W, qn
+from .package import (
+    FOOTER_CT,
+    FOOTER_REL,
+    HEADER_CT,
+    HEADER_REL,
+    HYPERLINK_REL,
+    DocxPackage,
+    HeaderFooterPart,
+)
 
 Occurrence = int | Literal["all"] | None
 
@@ -255,9 +263,142 @@ class InsertTable(_Op):
         return self
 
 
+class MoveBlocks(_Op):
+    """Move paragraphs and/or tables (reorder, or move to another section). Everything inside
+    them - formatting, pictures, links, fields - moves unchanged."""
+
+    op: Literal["move_blocks"]
+    block_ids: list[str] = Field(min_length=1, max_length=80,
+                                 description="Paragraph/table ids, kept in document order.")
+    target_id: str = Field(description="Paragraph or table to put them next to.")
+    position: Literal["before", "after"]
+
+
+class DuplicateBlocks(_Op):
+    """Copy paragraphs and/or tables, with all their formatting."""
+
+    op: Literal["duplicate_blocks"]
+    block_ids: list[str] = Field(min_length=1, max_length=80)
+    target_id: str | None = Field(
+        default=None, description="Where to put the copy; null = right after the originals.")
+    position: Literal["before", "after"] = "after"
+
+
+class SetParagraphFormat(_Op):
+    """Change paragraph style (e.g. Heading 1 -> Heading 2, Normal -> Title), alignment, or
+    take paragraphs out of a numbered/bulleted list."""
+
+    op: Literal["set_paragraph_format"]
+    block_ids: list[str] = Field(min_length=1, max_length=100)
+    style: str | None = Field(default=None, description="A paragraph style that exists in the "
+                                                        "document, e.g. 'Heading 2'.")
+    align: Literal["left", "center", "right", "justify"] | None = None
+    remove_numbering: bool = Field(default=False, description="Remove list bullets/numbers.")
+
+
+class SplitParagraph(_Op):
+    """Split a paragraph in two; the second paragraph starts at `at`."""
+
+    op: Literal["split_paragraph"]
+    block_id: str
+    at: str = Field(min_length=1, description="Exact text the new (second) paragraph starts with.")
+    occurrence: Occurrence = Field(default=None, description=_OCC_DESC)
+
+
+class MergeParagraphs(_Op):
+    """Join consecutive paragraphs into the first one (keeps all inline formatting)."""
+
+    op: Literal["merge_paragraphs"]
+    block_ids: list[str] = Field(min_length=2, max_length=50,
+                                 description="Consecutive paragraph ids, in order.")
+    separator: str = Field(default=" ", max_length=5,
+                           description="Text put between the joined paragraphs.")
+
+
+class InsertPageBreak(_Op):
+    """Start a new page before/after a paragraph or table."""
+
+    op: Literal["insert_page_break"]
+    target_id: str
+    position: Literal["before", "after"]
+
+
+class InsertTableColumn(_Op):
+    """Insert a column next to an existing one (simple tables without merged cells)."""
+
+    op: Literal["insert_table_column"]
+    table_id: str
+    column: int = Field(ge=0, description="0-based index of the column to copy and insert next to.")
+    position: Literal["before", "after"]
+    cells: list[str] = Field(min_length=1, description="Text for each row, top to bottom.")
+
+
+class DeleteTableColumns(_Op):
+    """Delete columns (simple tables without merged cells)."""
+
+    op: Literal["delete_table_columns"]
+    table_id: str
+    columns: list[int] = Field(min_length=1, description="0-based column indexes.")
+
+
+class BlocksToTable(_Op):
+    """Put existing consecutive paragraphs and/or tables into a new table (one block per
+    cell, row by row), keeping their formatting; tables become nested tables."""
+
+    op: Literal["blocks_to_table"]
+    block_ids: list[str] = Field(min_length=1, max_length=200)
+    columns: int = Field(default=1, ge=1, le=10)
+    table_like: str | None = Field(default=None, description="Existing table to copy the look from.")
+
+
+Url = Annotated[str, Field(pattern=r"^(https?://|mailto:)[^\s<>\"]+$", max_length=2000)]
+
+
+class InsertHyperlink(_Op):
+    """Turn existing text into a hyperlink."""
+
+    op: Literal["insert_hyperlink"]
+    block_id: str
+    find: str = Field(min_length=1)
+    url: Url
+    occurrence: Occurrence = Field(default=None, description=_OCC_DESC)
+
+
+class RemoveHyperlink(_Op):
+    """Remove a hyperlink but keep its text."""
+
+    op: Literal["remove_hyperlink"]
+    block_id: str
+    find: str = Field(min_length=1, description="Text inside the link.")
+    occurrence: Occurrence = Field(default=None, description=_OCC_DESC)
+
+
+class SetHyperlinkUrl(_Op):
+    """Change where an existing hyperlink points to (its text is unchanged)."""
+
+    op: Literal["set_hyperlink_url"]
+    block_id: str
+    find: str = Field(min_length=1, description="Text inside the link.")
+    url: Url
+    occurrence: Occurrence = Field(default=None, description=_OCC_DESC)
+
+
+class CreateHeaderFooter(_Op):
+    """Add a header or footer to a document (sections) that has none."""
+
+    op: Literal["create_header_footer"]
+    kind: Literal["header", "footer"]
+    text: str = Field(default="", max_length=300)
+    page_numbers: bool = Field(default=False, description="Add the page number.")
+    align: Literal["left", "center", "right"] = "center"
+
+
 EditOp = Annotated[
     ReplaceText | DeleteText | InsertText | InsertParagraph | DeleteParagraph | FormatText
-    | RestyleText | DeleteImages | DeleteTableRows | InsertTableRow | DeleteTable | InsertTable,
+    | RestyleText | DeleteImages | DeleteTableRows | InsertTableRow | DeleteTable | InsertTable
+    | MoveBlocks | DuplicateBlocks | SetParagraphFormat | SplitParagraph | MergeParagraphs
+    | InsertPageBreak | InsertTableColumn | DeleteTableColumns | BlocksToTable
+    | InsertHyperlink | RemoveHyperlink | SetHyperlinkUrl | CreateHeaderFooter,
     Field(discriminator="op"),
 ]
 
@@ -641,6 +782,135 @@ def table_grid_widths(tbl: etree._Element) -> list[int]:
     return [int(g.get(qn("w:w"))) for g in tbl.find(qn("w:tblGrid"))]
 
 
+PAGE_BREAK_TEXT = "⟦PAGE BREAK⟧"
+W14 = "http://schemas.microsoft.com/office/word/2010/wordml"
+JC = {"left": "left", "center": "center", "right": "right", "justify": "both"}
+_PPR_ORDER = [
+    "pStyle", "keepNext", "keepLines", "pageBreakBefore", "framePr", "widowControl", "numPr",
+    "suppressLineNumbers", "pBdr", "shd", "tabs", "suppressAutoHyphens", "kinsoku", "wordWrap",
+    "overflowPunct", "topLinePunct", "autoSpaceDE", "autoSpaceDN", "bidi", "adjustRightInd",
+    "snapToGrid", "spacing", "ind", "contextualSpacing", "mirrorIndents", "suppressOverlap", "jc",
+    "textDirection", "textAlignment", "textboxTightWrap", "outlineLvl", "divId", "cnfStyle",
+    "rPr", "sectPr", "pPrChange",
+]
+_PPR_RANK = {qn(f"w:{name}"): i for i, name in enumerate(_PPR_ORDER)}
+
+
+def page_break_text() -> str:
+    return PAGE_BREAK_TEXT
+
+
+def page_break_paragraph() -> etree._Element:
+    p = etree.Element(W.p, nsmap=_W_NSMAP)
+    etree.SubElement(etree.SubElement(p, W.r), W.br).set(W.type, "page")
+    return p
+
+
+def merge_separator_needed(first: str, second: str, separator: str) -> bool:
+    return bool(separator and first and second and not first[-1].isspace()
+                and not second[0].isspace())
+
+
+def _style_key(name: str) -> str:
+    return re.sub(r"[\s_-]+", "", name).lower()
+
+
+def resolve_paragraph_style(pkg: DocxPackage, name: str) -> str | None:
+    """Paragraph style id for a style name or id ("Heading 2", "heading2"), if it exists."""
+    want = _style_key(name)
+    for sid, sname in pkg.paragraph_styles.items():
+        if _style_key(sid) == want or _style_key(sname) == want:
+            return sid
+    return None
+
+
+def ppr_set(ppr: etree._Element, tag: str, value: str | None) -> None:
+    """Set (or remove, value=None) a pPr child, keeping schema order."""
+    for found in ppr.findall(tag):
+        ppr.remove(found)
+    if value is None:
+        return
+    el = etree.Element(tag)
+    el.set(W.val, value)
+    rank = _PPR_RANK.get(tag, len(_PPR_ORDER))
+    for idx, child in enumerate(ppr):
+        if _PPR_RANK.get(child.tag, len(_PPR_ORDER)) > rank:
+            ppr.insert(idx, el)
+            return
+    ppr.append(el)
+
+
+def without_sectpr(ppr: etree._Element | None) -> etree._Element | None:
+    if ppr is None:
+        return None
+    out = copy.deepcopy(ppr)
+    for s in out.findall(W.sectPr):
+        out.remove(s)
+    return out
+
+
+def sanitize_copy(el: etree._Element) -> etree._Element:
+    """Make a deep copy safe to insert next to its original: drop bookmarks and comment
+    anchors (they must be unique), section breaks, and per-paragraph ids. Used by the
+    editor for duplicates and by the verifier to predict them."""
+    for tag in (W.bookmarkStart, W.bookmarkEnd, W.commentRangeStart, W.commentRangeEnd):
+        for found in list(el.iter(tag)):
+            _remove(found)
+    for ref in list(el.iter(W.commentReference)):
+        run = ref.getparent()
+        _remove(ref)
+        if run is not None and run.tag == W.r and not _has_content(run):
+            _remove(run)
+    for ppr in el.iter(W.pPr):
+        for s in ppr.findall(W.sectPr):
+            ppr.remove(s)
+    for node in el.iter():
+        for attr in [a for a in node.attrib if a.startswith(f"{{{W14}}}")]:
+            del node.attrib[attr]
+    for sdt_id in list(el.iter(qn("w:sdtPr"))):
+        for found in sdt_id.findall(W.id):
+            sdt_id.remove(found)
+    return el
+
+
+def _c14n(el: etree._Element) -> bytes:
+    return etree.tostring(el, method="c14n", exclusive=True, with_comments=False)
+
+
+def first_free_docpr_id(pkg: DocxPackage) -> int:
+    """Drawing ids for copies start after the largest id in the original document."""
+    nums = [int(d.get("id")) for root in [pkg.document] + [hf.root for hf in pkg.hf_parts]
+            for d in root.iter(qn("wp:docPr")) if (d.get("id") or "").isdigit()]
+    return max(nums, default=0) + 1
+
+
+def build_header_footer(kind: str, text: str, page_numbers: bool, align: str,
+                        style_id: str | None) -> etree._Element:
+    """A new header/footer part. Shared with the verifier, which predicts it."""
+    tag = qn("w:hdr") if kind == "header" else qn("w:ftr")
+    root = etree.Element(tag, nsmap={"w": _W_NSMAP["w"], "r": qn("r:x")[1:].split("}")[0]})
+    p = etree.SubElement(root, W.p)
+    ppr = etree.SubElement(p, W.pPr)
+    if style_id:
+        ppr_set(ppr, W.pStyle, style_id)
+    ppr_set(ppr, qn("w:jc"), JC[align])
+    if text:
+        etree.SubElement(p, W.r).append(_new_t(text + (" " if page_numbers else "")))
+    if page_numbers:
+        for kind_, extra in (("begin", None), (None, " PAGE "), ("separate", None),
+                             (None, "1"), ("end", None)):
+            run = etree.SubElement(p, W.r)
+            if kind_:
+                etree.SubElement(run, W.fldChar).set(W.fldCharType, kind_)
+            elif extra == " PAGE ":
+                instr = etree.SubElement(run, W.instrText)
+                instr.set(XML_SPACE, "preserve")
+                instr.text = extra
+            else:
+                run.append(_new_t(extra))
+    return root
+
+
 def removal_problem(el: etree._Element) -> str | None:
     """Would removing this subtree corrupt something outside it?"""
     if any(True for t in (W.commentRangeStart, W.commentRangeEnd, W.commentReference)
@@ -685,6 +955,28 @@ class DocumentEditor:
         self._table_rows: dict[etree._Element, list[etree._Element]] = {
             b.element: b.element.findall(W.tr) for b in self.index.blocks if b.kind == "table"}
         self._new_counter = 0
+        self._touched: set[etree._Element] = set()  # elements changed earlier in this plan
+        self._created_links: set[etree._Element] = set()
+        self._rows_inserted: set[etree._Element] = set()  # tables that got new rows
+        self._cols_changed: set[etree._Element] = set()  # tables whose columns changed
+        self._next_docpr = first_free_docpr_id(pkg)
+        self._source_bytes = pkg.to_bytes()  # for templates as they were (see _original)
+        self._cell_first: dict[etree._Element, etree._Element] = {}
+        for b in self.index.blocks:
+            parent = b.element.getparent()
+            if b.kind == "paragraph" and parent is not None and parent.tag == W.tc:
+                self._cell_first.setdefault(parent, b.element)
+        self._pristine: DocumentIndex | None = None
+        # table looks as they were before the plan (table_like copies these)
+        self._table_looks: dict[etree._Element, etree._Element] = {}
+        for b in self.index.blocks:
+            if b.kind == "table":
+                look = etree.Element(W.tbl, nsmap=_W_NSMAP)
+                for tag in (qn("w:tblPr"), qn("w:tblGrid")):
+                    found = b.element.find(tag)
+                    if found is not None:
+                        look.append(copy.deepcopy(found))
+                self._table_looks[b.element] = look
         self.result = ApplyResult()
 
     # ------------------------------------------------------------ resolving
@@ -714,7 +1006,16 @@ class DocumentEditor:
         node = el
         while node.getparent() is not None:
             node = node.getparent()
-        return node is self.pkg.document
+        return node is self.pkg.document or any(node is hf.root for hf in self.pkg.hf_parts)
+
+    def _root_of(self, el: etree._Element) -> etree._Element:
+        node = el
+        while node.getparent() is not None and node.tag != W.body:
+            node = node.getparent()
+        return node
+
+    def _touch(self, el: etree._Element) -> None:
+        self._touched.add(el)
 
     def _row(self, row_id: str) -> tuple[etree._Element, etree._Element]:
         """Resolve 't1.r3' to (table element, row element) in the original numbering."""
@@ -735,6 +1036,9 @@ class DocumentEditor:
     def _current_paragraphs(self) -> list[tuple[str, etree._Element]]:
         blocks: list[Block] = []
         _walk_container(self.pkg.body, "", blocks, 0, None, {"p": 0, "t": 0})
+        for hf in self.pkg.hf_parts:
+            if not hf.created:
+                _walk_container(hf.root, f"{hf.label}.", blocks, 1, None, {"p": 0, "t": 0})
         return [(self._label(b.element), b.element) for b in blocks
                 if b.kind == "paragraph" and b.editable]
 
@@ -752,7 +1056,14 @@ class DocumentEditor:
             found.extend((bid, el, pos) for pos in find_all(text, needle))
         where = block_id or "the document"
         if not found:
-            raise EditError(f"Text {needle!r} was not found in {where}.{_suggest(texts, needle)}")
+            elsewhere = ""
+            if block_id is not None:  # the planner often picks the neighbouring block
+                others = [b for b, e in self._current_paragraphs()
+                          if needle in paragraph_view(e).text][:5]
+                if others:
+                    elsewhere = f" It does appear in {', '.join(others)} - check the block id."
+            raise EditError(f"Text {needle!r} was not found in {where}.{elsewhere}"
+                            f"{_suggest(texts, needle) if not elsewhere else ''}")
         if occurrence is None:
             if len(found) > 1:
                 locs = ", ".join(sorted({b for b, _, _ in found}, key=lambda s: s))
@@ -913,6 +1224,7 @@ class DocumentEditor:
             befores.setdefault(el, (bid, paragraph_view(el).text))
             fn(bid, el, pos)
         for el, (bid, before) in befores.items():
+            self._touch(el)
             self._record(idx, kind, bid, before, paragraph_view(el).text)
 
     def _apply_one(self, idx: int, op) -> None:
@@ -964,6 +1276,7 @@ class DocumentEditor:
                     self._insert_at(el, pos, text, "right", op.block_id)
                 else:
                     self._insert_at(el, pos + len(op.anchor), text, "left", op.block_id)
+            self._touch(el)
             self._record(idx, "insert_text", op.block_id, before, paragraph_view(el).text)
         elif isinstance(op, InsertParagraph):
             self._insert_paragraph(idx, op)
@@ -983,6 +1296,32 @@ class DocumentEditor:
             self._delete_table(idx, op)
         elif isinstance(op, InsertTable):
             self._insert_table(idx, op)
+        elif isinstance(op, MoveBlocks):
+            self._move_blocks(idx, op)
+        elif isinstance(op, DuplicateBlocks):
+            self._duplicate_blocks(idx, op)
+        elif isinstance(op, SetParagraphFormat):
+            self._set_paragraph_format(idx, op)
+        elif isinstance(op, SplitParagraph):
+            self._split_paragraph(idx, op)
+        elif isinstance(op, MergeParagraphs):
+            self._merge_paragraphs(idx, op)
+        elif isinstance(op, InsertPageBreak):
+            self._insert_page_break(idx, op)
+        elif isinstance(op, InsertTableColumn):
+            self._insert_table_column(idx, op)
+        elif isinstance(op, DeleteTableColumns):
+            self._delete_table_columns(idx, op)
+        elif isinstance(op, BlocksToTable):
+            self._blocks_to_table(idx, op)
+        elif isinstance(op, InsertHyperlink):
+            self._insert_hyperlink(idx, op)
+        elif isinstance(op, RemoveHyperlink):
+            self._remove_hyperlink(idx, op)
+        elif isinstance(op, SetHyperlinkUrl):
+            self._set_hyperlink_url(idx, op)
+        elif isinstance(op, CreateHeaderFooter):
+            self._create_header_footer(idx, op)
         else:  # pragma: no cover - pydantic guarantees the union
             raise EditError(f"Unknown operation {op!r}")
 
@@ -1026,7 +1365,42 @@ class DocumentEditor:
             return _strip_revision_markup(copy.deepcopy(ppr.find(W.rPr)))
         return None
 
+    def _require_pristine(self, el: etree._Element, what: str) -> None:
+        """Deleting is only allowed for blocks still exactly as in the original document, so
+        content moved, split or created earlier in the plan is never deleted by accident."""
+        if el.tag == W.tr:
+            table = el.getparent()
+            original = self._original(table)
+            rows = self._table_rows.get(table, [])
+            idx = next((i for i, r in enumerate(rows) if r is el), None)
+            ok = original is not table and idx is not None and \
+                len(original.findall(W.tr)) > idx and \
+                _c14n(original.findall(W.tr)[idx]) == _c14n(el)
+        else:
+            original = self._original(el)
+            ok = original is not el and _c14n(original) == _c14n(el)
+        if not ok:
+            raise EditError(f"{what} was changed earlier in this plan (content moved into it, "
+                            "split, merged or edited); delete it in a separate request.")
+
+    def _cell_template(self, tc: etree._Element) -> etree._Element:
+        """First paragraph of the cell as it was in the original document."""
+        first = self._cell_first.get(tc)
+        return first if first is not None else cell_template_paragraph(tc)
+
+    def _original(self, el: etree._Element) -> etree._Element:
+        """The paragraph as it was before this plan (templates are copied from originals,
+        so an earlier operation on the template does not leak into new paragraphs)."""
+        bid = self._ids.get(el)
+        if not bid or bid.startswith("new"):
+            return el
+        if self._pristine is None:
+            self._pristine = build_index(DocxPackage(self._source_bytes))
+        block = self._pristine.get(bid)
+        return block.element if block is not None else el
+
     def _make_paragraph(self, template: etree._Element, text: str) -> etree._Element:
+        template = self._original(template)
         p = etree.Element(W.p)
         ppr = template.find(W.pPr)
         if ppr is not None:
@@ -1049,8 +1423,10 @@ class DocumentEditor:
     def _delete_paragraph(self, idx: int, op: DeleteParagraph) -> None:
         block = self._block(op.block_id)
         el = block.element
+        self._require_pristine(el, op.block_id)
         view = paragraph_view(el)
-        allowed = {"TAB", "BR", "NBHYPHEN"} | ({"IMAGE"} if op.delete_images else set())
+        allowed = {"TAB", "BR", "NBHYPHEN", "PAGE_BREAK"} | (
+            {"IMAGE"} if op.delete_images else set())
         blockers = sorted({pc.label or "protected" for pc in view.pieces
                            if pc.kind == "protected" and pc.label not in allowed})
         if blockers == ["IMAGE"]:
@@ -1078,6 +1454,10 @@ class DocumentEditor:
         if ppr is not None and ppr.find(W.sectPr) is not None:
             raise EditError(f"{op.block_id} carries a section break and cannot be deleted.")
         parent = el.getparent()
+        if parent is not None and parent.tag in (qn("w:hdr"), qn("w:ftr")) \
+                and len(parent.findall(W.p)) == 1:
+            raise EditError(f"{op.block_id} is the only paragraph of its header/footer; clear its "
+                            "text with delete_text instead.")
         if parent is not None and parent.tag == W.tc:
             paras = parent.findall(W.p)
             if len(paras) == 1:
@@ -1140,6 +1520,7 @@ class DocumentEditor:
                 apply_props(run, props)
             if paragraph_view(el).text != text_before:  # pragma: no cover - defensive
                 raise EditError("internal error: formatting changed the text")
+            self._touch(el)
             self._record(idx, "format_text", bid, op.find, label)
 
     def _scope(self, block_id: str | None) -> list[tuple[str, etree._Element]]:
@@ -1172,7 +1553,12 @@ class DocumentEditor:
                             present[label] = present.get(label, 0) + 1
             if not runs:
                 continue
+            if el in self._touched:
+                raise EditError(f"restyle_text must come before other edits to {bid} in the plan "
+                                "(it matches formatting as it is in the original); reorder the "
+                                "operations.")
             hits += len(runs)
+            self._touch(el)
             for run in runs:
                 apply_props(run, new)
             text = paragraph_view(el).text
@@ -1193,6 +1579,8 @@ class DocumentEditor:
         found: set[str | None] = set()
         available: list[str] = []
         for bid, el in self._scope(op.block_id):
+            if bid.startswith("new"):
+                continue  # applies to the document's existing content, like restyle_text
             view = paragraph_view(el)
             hits = [pc for pc in view.pieces if image_selected(pc, refs, op.max_size_px)]
             available += [f"{image_info(pc.node).describe()} in {bid}" for pc in view.pieces
@@ -1204,6 +1592,7 @@ class DocumentEditor:
                 found.add(image_info(pc.node).ref)
                 _remove(pc.node)
             _clean_runs([pc.run for pc in hits if pc.run is not None])
+            self._touch(el)
             self._record(idx, "delete_images", bid, before, paragraph_view(el).text)
         missing = sorted(refs - found) if refs is not None else []
         if not found or missing:
@@ -1220,11 +1609,13 @@ class DocumentEditor:
             table, tr = self._row(row_id)
             targets.setdefault(table, []).append((row_id, tr))
         for table, rows in targets.items():
+            self._touch(table)
             current = table.findall(W.tr)
             doomed = {id(tr) for _, tr in rows}
             if all(id(tr) in doomed for tr in current):
                 raise EditError("That would delete every row of the table; use delete_table.")
             for row_id, tr in rows:
+                self._require_pristine(tr, row_id)
                 problem = removal_problem(tr)
                 if problem:
                     raise EditError(f"Row {row_id} cannot be deleted: {problem}.")
@@ -1258,6 +1649,11 @@ class DocumentEditor:
 
     def _insert_table_row(self, idx: int, op: InsertTableRow) -> None:
         table, anchor = self._row(op.row)
+        if table in self._cols_changed:
+            raise EditError("This plan already changed this table's columns; add rows in a "
+                            "separate request.")
+        self._rows_inserted.add(table)
+        self._touch(table)
         _, template = self._row(op.format_like_row) if op.format_like_row else (table, anchor)
         if any(child.tag not in (W.tc, qn("w:trPr"), qn("w:tblPrEx")) for child in template):
             raise EditError("The template row contains content controls or custom XML; pick "
@@ -1271,9 +1667,7 @@ class DocumentEditor:
         for tc, cell_text in zip(cells, op.cells):
             new_tc = new_cell_skeleton(tc)
             # the cell's first *original* paragraph (not one added earlier in this plan)
-            tpl_p = next((q for q in tc.findall(W.p)
-                          if not self._ids.get(q, "new").startswith("new")),
-                         cell_template_paragraph(tc))
+            tpl_p = self._cell_template(tc)
             lines = cell_text.replace("\r\n", "\n").split("\n")
             for line in lines:
                 p = self._make_paragraph(tpl_p, _check_inline_text(line, "cell text"))
@@ -1292,7 +1686,8 @@ class DocumentEditor:
     def _insert_table(self, idx: int, op: InsertTable) -> None:
         target = self._block(op.target_id, ("paragraph", "table")).element
         template_p = self._block(op.format_like).element
-        template_t = self._block(op.table_like, ("table",)).element if op.table_like else None
+        template_t = (self._table_looks[self._block(op.table_like, ("table",)).element]
+                      if op.table_like else None)
         tbl = new_table_skeleton(self.pkg, template_t, len(op.rows[0]))
         widths = table_grid_widths(tbl)
         for r, row in enumerate(op.rows):
@@ -1313,13 +1708,7 @@ class DocumentEditor:
             target.addnext(tbl)
         else:
             target.addprevious(tbl)
-        # Word needs a paragraph between two tables and after a table that ends the body or
-        # a cell; add an empty one where it is missing.
-        nxt, prv = tbl.getnext(), tbl.getprevious()
-        if nxt is None or nxt.tag in (W.sectPr, W.tbl):
-            tbl.addnext(etree.Element(W.p, nsmap=_W_NSMAP))
-        if prv is not None and prv.tag == W.tbl:
-            tbl.addprevious(etree.Element(W.p, nsmap=_W_NSMAP))
+        self._ensure_spacers(tbl, tbl)
         self.result.inserted += 1
         self._record(idx, "insert_table", f"{op.target_id} ({op.position})", None,
                      f"table {len(op.rows)}x{len(widths)}: "
@@ -1329,6 +1718,7 @@ class DocumentEditor:
     def _delete_table(self, idx: int, op: DeleteTable) -> None:
         block = self._block(op.table_id, ("table",))
         el = block.element
+        self._require_pristine(el, op.table_id)
         problem = removal_problem(el)
         if problem:
             raise EditError(f"{op.table_id} cannot be deleted: {problem}.")
@@ -1339,6 +1729,473 @@ class DocumentEditor:
         _remove(el)
         self._deleted[op.table_id] = idx
         self._record(idx, "delete_table", op.table_id, before, None)
+
+
+    # ------------------------------------------------------------ structure
+    def _ensure_spacers(self, first: etree._Element, last: etree._Element) -> None:
+        """Word needs a paragraph between two tables and after a table that ends the body,
+        a header/footer or a cell; add an empty one where a placed table needs it."""
+        nxt, prv = last.getnext(), first.getprevious()
+        if last.tag == W.tbl and (nxt is None or nxt.tag in (W.sectPr, W.tbl)):
+            last.addnext(etree.Element(W.p, nsmap=_W_NSMAP))
+        if first.tag == W.tbl and prv is not None and prv.tag == W.tbl:
+            first.addprevious(etree.Element(W.p, nsmap=_W_NSMAP))
+
+    def _check_containers(self, containers: list[etree._Element]) -> None:
+        """Refuse results Word would repair: touching tables, cells or headers/footers left
+        without a final paragraph, a body that ends with a table."""
+        for c in containers:
+            if c.getparent() is None and c.tag not in (qn("w:hdr"), qn("w:ftr")):
+                continue  # detached
+            kids = [k for k in c if k.tag in (W.p, W.tbl)]
+            for a, b in zip(kids, kids[1:]):
+                if a.tag == W.tbl and b.tag == W.tbl and a.getnext() is b:
+                    raise EditError("That would leave two tables touching (Word would merge "
+                                    "them); keep a paragraph between them.")
+            if c.tag == W.tc and (not kids or kids[-1].tag != W.p):
+                raise EditError("That would leave a table cell without a final paragraph.")
+            if c.tag in (W.body, qn("w:hdr"), qn("w:ftr")) and kids and kids[-1].tag != W.p:
+                raise EditError("That would leave the document (or a header/footer) ending "
+                                "with a table.")
+
+    def _blocks(self, ids: list[str], kinds=("paragraph", "table")) -> list[etree._Element]:
+        els = [self._block(b, kinds).element for b in dict.fromkeys(ids)]
+        root = self._root_of(els[0])
+        order = {id(e): i for i, e in enumerate(root.iter())}
+        if any(self._root_of(e) is not root for e in els):
+            raise EditError("All blocks of one operation must be in the same part (body, or "
+                            "one header/footer).")
+        return sorted(els, key=lambda e: order[id(e)])
+
+    def _consecutive(self, els: list[etree._Element]) -> None:
+        for a, b in zip(els, els[1:]):
+            nxt = a.getnext()
+            while nxt is not None and nxt.tag not in (W.p, W.tbl):
+                nxt = nxt.getnext()
+            if nxt is not b:
+                raise EditError("The paragraphs must be consecutive (one directly after the "
+                                "other, in the same container).")
+
+    @staticmethod
+    def _has_section_break(el: etree._Element) -> bool:
+        ppr = el.find(W.pPr) if el.tag == W.p else None
+        return ppr is not None and ppr.find(W.sectPr) is not None
+
+    # ------------------------------------------------------- move / duplicate
+    def _move_blocks(self, idx: int, op: MoveBlocks) -> None:
+        els = self._blocks(op.block_ids)
+        target = self._block(op.target_id, ("paragraph", "table")).element
+        if self._root_of(target) is not self._root_of(els[0]):
+            raise EditError("Blocks can only be moved within the same part (body, or one "
+                            "header/footer).")
+        for el in els:
+            if el is target or any(a is el for a in target.iterancestors()):
+                raise EditError("The target is one of the blocks being moved.")
+            if self._has_section_break(el):
+                raise EditError(f"{self._label(el)} carries a section break and cannot move.")
+        sources = {id(el.getparent()): el.getparent() for el in els}
+        texts = [paragraph_view(el).text if el.tag == W.p else f"table {self._label(el)}"
+                 for el in els]
+        for el in els:
+            _remove(el)
+        anchor = target
+        if op.position == "after":
+            for el in els:
+                anchor.addnext(el)
+                anchor = el
+        else:
+            for el in els:
+                target.addprevious(el)
+        self._ensure_spacers(els[0], els[-1])
+        self._check_containers(list(sources.values()) + [target.getparent()])
+        for el, text in zip(els, texts):
+            self._record(idx, "move_blocks", self._label(el), text,
+                         f"{text[:60]} → {op.position} {op.target_id}")
+
+    def _duplicate_blocks(self, idx: int, op: DuplicateBlocks) -> None:
+        els = self._blocks(op.block_ids)
+        for el in els:
+            original = self._original(el)
+            if original is el or _c14n(original) != _c14n(el):
+                raise EditError(f"{self._label(el)} was changed earlier in this plan; "
+                                "duplicate it first, then edit the copy.")
+            labels = {pc.label for p in ([el] if el.tag == W.p else el.iter(W.p))
+                      for pc in paragraph_view(p).pieces if pc.kind == "protected"}
+            bad = labels & {"FOOTNOTE", "ENDNOTE", "TRACKED_CHANGE"}
+            if bad:
+                raise EditError(f"{self._label(el)} contains {', '.join(sorted(bad)).lower()} "
+                                "which cannot be duplicated.")
+        copies = [sanitize_copy(copy.deepcopy(el)) for el in els]
+        for cp in copies:  # every drawing needs its own id
+            for d in cp.iter(qn("wp:docPr")):
+                d.set("id", str(self._next_docpr))
+                self._next_docpr += 1
+        if op.target_id:
+            target = self._block(op.target_id, ("paragraph", "table")).element
+            if self._root_of(target) is not self._root_of(els[0]):
+                raise EditError("Copies must stay in the same part as the originals.")
+            position = op.position
+        else:
+            target, position = els[-1], "after"
+        anchor = target
+        if position == "after":
+            for cp in copies:
+                anchor.addnext(cp)
+                anchor = cp
+        else:
+            for cp in copies:
+                target.addprevious(cp)
+        self._ensure_spacers(copies[0], copies[-1])
+        self._check_containers([target.getparent()])
+        for cp in copies:
+            for p_el in ([cp] if cp.tag == W.p else cp.iter(W.p)):
+                self._new_id(p_el)
+            self._record(idx, "duplicate_blocks", self._label(cp), None,
+                         paragraph_view(cp).text if cp.tag == W.p else "copy of a table")
+
+    # ------------------------------------------------------- paragraph format
+    def _set_paragraph_format(self, idx: int, op: SetParagraphFormat) -> None:
+        style = None
+        if op.style:
+            style = resolve_paragraph_style(self.pkg, op.style)
+            if style is None:
+                names = ", ".join(sorted(n[:1].upper() + n[1:]
+                                         for n in self.pkg.paragraph_styles.values())[:40])
+                raise EditError(f"There is no paragraph style {op.style!r} in this document. "
+                                f"Available: {names}.")
+        if not (style or op.align or op.remove_numbering):
+            raise EditError("set_paragraph_format needs style, align or remove_numbering.")
+        for bid in dict.fromkeys(op.block_ids):
+            el = self._block(bid).element
+            ppr = el.find(W.pPr)
+            if ppr is None:
+                ppr = etree.Element(W.pPr)
+                el.insert(0, ppr)
+            if style:
+                ppr_set(ppr, W.pStyle, style)
+            if op.align:
+                ppr_set(ppr, qn("w:jc"), JC[op.align])
+            if op.remove_numbering:
+                ppr_set(ppr, W.numPr, None)
+            self._touch(el)
+            label = ", ".join(x for x in (f"style={self.pkg.paragraph_styles.get(style, style)}"
+                                          if style else "", f"align={op.align}" if op.align else "",
+                                          "no numbering" if op.remove_numbering else "") if x)
+            text = paragraph_view(el).text
+            self._record(idx, "set_paragraph_format", bid, text, f"{text[:80]} ({label})")
+
+    # ----------------------------------------------------------- split / merge
+    def _split_paragraph(self, idx: int, op: SplitParagraph) -> None:
+        if op.occurrence == "all":
+            raise EditError('occurrence="all" is not supported for split_paragraph.')
+        _, el, pos = self._matches(op.block_id, op.at, op.occurrence)[0]
+        view = paragraph_view(el)
+        if pos == 0:
+            raise EditError("The split point is the start of the paragraph; nothing to split.")
+        pc = view.piece_at(pos)
+        if pc.kind == "text" and pc.container is el and pc.start < pos:
+            _split_run_at(pc, pos)
+            view = paragraph_view(el)
+            pc = view.piece_at(pos)
+        node = pc.run if pc.run is not None else pc.node
+        while node.getparent() is not el:
+            node = node.getparent()
+        starts = [p_.start for p_ in view.pieces
+                  if (p_.run if p_.run is not None else p_.node) is node
+                  or any(a is node for a in (p_.run if p_.run is not None else p_.node)
+                         .iterancestors())]
+        if not starts or min(starts) != pos or pc.label == "FIELD":
+            raise EditError("Cannot split inside a link, field or other protected element; "
+                            "choose a split point in plain text.")
+        before_kids = []
+        for child in el:
+            if child is node:
+                break
+            if child.tag != W.pPr:
+                before_kids.append(child)
+        fld = sum(1 for k in before_kids for f in k.iter(W.fldChar)
+                  if f.get(W.fldCharType) == "begin") - sum(
+            1 for k in before_kids for f in k.iter(W.fldChar) if f.get(W.fldCharType) == "end")
+        if fld:
+            raise EditError("Cannot split inside a field; choose another split point.")
+        original = view.text
+        new_p = etree.Element(W.p, nsmap=_W_NSMAP)
+        ppr = without_sectpr(el.find(W.pPr))
+        if ppr is not None:
+            new_p.append(ppr)
+        for child in before_kids:
+            new_p.append(child)
+        el.addprevious(new_p)
+        for part, at_end in ((new_p, True), (el, False)):  # one space at the cut goes away
+            v = paragraph_view(part)
+            if not v.text:
+                continue
+            i = len(v.text) - 1 if at_end else 0
+            pc2 = v.piece_at(i)
+            if v.text[i] == " " and pc2 is not None and pc2.kind == "text":
+                self._replace_range(part, i, i + 1, "", self._label(part))
+        self._new_id(new_p)
+        self._touch(el)
+        self._record(idx, "split_paragraph", op.block_id, original,
+                     f"{paragraph_view(new_p).text} ¶ {paragraph_view(el).text}")
+
+    def _merge_paragraphs(self, idx: int, op: MergeParagraphs) -> None:
+        ids = list(dict.fromkeys(op.block_ids))
+        els = [self._block(b).element for b in ids]
+        self._consecutive(els)
+        if any(self._has_section_break(e) for e in els):
+            raise EditError("One of these paragraphs carries a section break; it cannot be "
+                            "merged.")
+        sep = _check_inline_text(op.separator, "separator") if op.separator else ""
+        first = els[0]
+        before = " ¶ ".join(paragraph_view(e).text for e in els)
+        for bid, el in zip(ids[1:], els[1:]):
+            a, b = paragraph_view(first).text, paragraph_view(el).text
+            if merge_separator_needed(a, b, sep):
+                self._insert_at(first, len(a), sep, "left", ids[0])
+            for child in [c for c in el if c.tag != W.pPr]:
+                first.append(child)
+            _remove(el)
+            self._deleted[bid] = idx
+        self._touch(first)
+        self._record(idx, "merge_paragraphs", ids[0], before, paragraph_view(first).text)
+
+    def _insert_page_break(self, idx: int, op: InsertPageBreak) -> None:
+        target = self._block(op.target_id, ("paragraph", "table")).element
+        p_el = page_break_paragraph()
+        if op.position == "after":
+            target.addnext(p_el)
+        else:
+            target.addprevious(p_el)
+        self._new_id(p_el)
+        self._record(idx, "insert_page_break", f"{op.target_id} ({op.position})", None,
+                     "page break")
+
+    # ------------------------------------------------------------- columns
+    def _regular_rows(self, table_id: str) -> tuple[etree._Element, list[list[etree._Element]]]:
+        tbl = self._block(table_id, ("table",)).element
+        if tbl in self._rows_inserted or tbl in self._cols_changed:
+            raise EditError("This plan already changed this table's rows or columns; change "
+                            "its columns in a separate request.")
+        rows = []
+        for tr in tbl.findall(W.tr):
+            if any(c.tag not in (W.tc, qn("w:trPr"), qn("w:tblPrEx")) for c in tr):
+                raise EditError("This table has content controls in its rows; columns cannot "
+                                "be changed.")
+            cells = tr.findall(W.tc)
+            for tc in cells:
+                tcpr = tc.find(W.tcPr)
+                if tcpr is not None and (tcpr.find(W.vMerge) is not None or (
+                        tcpr.find(W.gridSpan) is not None
+                        and tcpr.find(W.gridSpan).get(W.val, "1") != "1")):
+                    raise EditError("This table has merged cells; its columns cannot be "
+                                    "changed safely.")
+            rows.append(cells)
+        grid = tbl.find(qn("w:tblGrid"))
+        ncols = {len(r) for r in rows}
+        if len(ncols) != 1 or grid is None or len(grid) != next(iter(ncols)):
+            raise EditError("This table's rows have different numbers of cells; its columns "
+                            "cannot be changed safely.")
+        return tbl, rows
+
+    def _insert_table_column(self, idx: int, op: InsertTableColumn) -> None:
+        tbl, rows = self._regular_rows(op.table_id)
+        if op.column >= len(rows[0]):
+            raise EditError(f"{op.table_id} has only {len(rows[0])} columns (0-{len(rows[0]) - 1}).")
+        if len(op.cells) != len(rows):
+            raise EditError(f"{op.table_id} has {len(rows)} rows; give exactly one text per row.")
+        grid = tbl.find(qn("w:tblGrid"))
+        new_col = copy.deepcopy(grid[op.column])
+        if op.position == "after":
+            grid[op.column].addnext(new_col)
+        else:
+            grid[op.column].addprevious(new_col)
+        for cells, text in zip(rows, op.cells):
+            tc = cells[op.column]
+            new_tc = new_cell_skeleton(tc)
+            tpl_p = self._cell_template(tc)
+            for line in text.replace("\r\n", "\n").split("\n"):
+                p_el = self._make_paragraph(tpl_p, _check_inline_text(line, "cell text"))
+                self._new_id(p_el)
+                new_tc.append(p_el)
+            if op.position == "after":
+                tc.addnext(new_tc)
+            else:
+                tc.addprevious(new_tc)
+        self._cols_changed.add(tbl)
+        self._touch(tbl)
+        self._record(idx, "insert_table_column", op.table_id, None,
+                     f"column {op.position} {op.column}: " + " | ".join(op.cells[:6]))
+
+    def _delete_table_columns(self, idx: int, op: DeleteTableColumns) -> None:
+        tbl, rows = self._regular_rows(op.table_id)
+        self._require_pristine(tbl, op.table_id)
+        cols = sorted(set(op.columns), reverse=True)
+        if any(c >= len(rows[0]) for c in cols):
+            raise EditError(f"{op.table_id} has only {len(rows[0])} columns (0-{len(rows[0]) - 1}).")
+        if len(cols) >= len(rows[0]):
+            raise EditError("That would delete every column; use delete_table.")
+        for cells in rows:
+            for c in cols:
+                problem = removal_problem(cells[c])
+                if problem:
+                    raise EditError(f"Column {c} cannot be deleted: {problem}.")
+        grid = tbl.find(qn("w:tblGrid"))
+        for c in cols:
+            for cells in rows:
+                _remove(cells[c])
+            grid.remove(grid[c])
+        self._cols_changed.add(tbl)
+        self._touch(tbl)
+        self._record(idx, "delete_table_columns", op.table_id,
+                     f"columns {', '.join(str(c) for c in sorted(cols))}", None)
+
+    def _blocks_to_table(self, idx: int, op: BlocksToTable) -> None:
+        els = self._blocks(op.block_ids)
+        self._consecutive(els)
+        if any(self._has_section_break(e) for e in els):
+            raise EditError("A section-break paragraph cannot go into a table.")
+        template_t = (self._table_looks[self._block(op.table_like, ("table",)).element]
+                      if op.table_like else None)
+        tbl = new_table_skeleton(self.pkg, template_t, op.columns)
+        widths = table_grid_widths(tbl)
+        parent = els[0].getparent()
+        els[0].addprevious(tbl)
+        cells: list[etree._Element | None] = list(els) + [None] * (-len(els) % op.columns)
+        for r in range(0, len(cells), op.columns):
+            tr = new_table_row(False)
+            for c, el in enumerate(cells[r:r + op.columns]):
+                tc = new_table_cell(widths[c])
+                tc.append(el if el is not None else etree.Element(W.p, nsmap=_W_NSMAP))
+                if el is not None and el.tag == W.tbl:  # a cell must end with a paragraph
+                    tc.append(etree.Element(W.p, nsmap=_W_NSMAP))
+                tr.append(tc)
+            tbl.append(tr)
+        self._ensure_spacers(tbl, tbl)
+        self._check_containers([parent])
+        self.result.inserted += 1
+        self._record(idx, "blocks_to_table", self._label(els[0]), None,
+                     f"table {len(cells) // op.columns}x{op.columns} from {len(els)} block(s)")
+
+    # ------------------------------------------------------------ hyperlinks
+    def _hyperlink_style(self, run: etree._Element) -> None:
+        if "Hyperlink" in self.pkg.style_names:
+            _set_rpr_prop(run, W.rStyle, "Hyperlink")
+        else:
+            apply_props(run, {"color": "0563C1", "underline": True})
+
+    def _insert_hyperlink(self, idx: int, op: InsertHyperlink) -> None:
+        rid = None
+        for bid, el, pos in self._ordered_for_mutation(
+                self._matches(op.block_id, op.find, op.occurrence)):
+            start, end = pos, pos + len(op.find)
+            view = paragraph_view(el)
+            for pc in view.pieces_in(start, end):
+                if pc.kind != "text" or pc.container is not el:
+                    raise EditError(f"{op.find!r} in {bid} is already (part of) a link or a "
+                                    "protected element.")
+            last = view.piece_at(end - 1)
+            _split_run_at(last, end)
+            first = paragraph_view(el).piece_at(start)
+            _split_run_at(first, start)
+            view = paragraph_view(el)
+            runs = []
+            for pc in view.pieces_in(start, end):
+                if pc.run not in runs:
+                    runs.append(pc.run)
+            group = []
+            node = runs[0]
+            while node is not None:
+                group.append(node)
+                if node is runs[-1]:
+                    break
+                node = node.getnext()
+            rid = rid or self.pkg.add_relationship(HYPERLINK_REL, op.url, external=True)
+            link = etree.Element(W.hyperlink)
+            link.set(R_ID, rid)
+            self._created_links.add(link)
+            runs[0].addprevious(link)
+            for node in group:
+                link.append(node)
+            for run in link.iter(W.r):
+                self._hyperlink_style(run)
+            self._touch(el)
+            self._record(idx, "insert_hyperlink", bid, op.find, f"{op.find} → {op.url}")
+
+    def _find_link(self, op) -> tuple[str, etree._Element, etree._Element]:
+        if op.occurrence == "all":
+            raise EditError('occurrence="all" is not supported for hyperlink edits.')
+        bid, el, pos = self._matches(op.block_id, op.find, op.occurrence)[0]
+        pc = paragraph_view(el).piece_at(pos)
+        link = pc.container if pc is not None else None
+        if link is None or link.tag != W.hyperlink or link.getparent() is not el:
+            raise EditError(f"{op.find!r} in {bid} is not inside a hyperlink.")
+        if link in self._created_links:
+            raise EditError("That link was created earlier in this plan; create it with the "
+                            "right address instead.")
+        return bid, el, link
+
+    def _remove_hyperlink(self, idx: int, op: RemoveHyperlink) -> None:
+        bid, el, link = self._find_link(op)
+        text = "".join(t.text or "" for t in link.iter(W.t))
+        for run in link.iter(W.r):
+            rpr = run.find(W.rPr)
+            if rpr is None:
+                continue
+            for tag, vals in ((W.rStyle, ("Hyperlink",)), (W.color, ("0563C1", "0000FF")),
+                              (W.u, ("single",))):
+                for found in rpr.findall(tag):
+                    if (found.get(W.val) or "") in vals:
+                        rpr.remove(found)
+        for child in list(link):
+            link.addprevious(child)
+        _remove(link)
+        self._touch(el)
+        self._record(idx, "remove_hyperlink", bid, text, f"{text} (no longer a link)")
+
+    def _set_hyperlink_url(self, idx: int, op: SetHyperlinkUrl) -> None:
+        bid, el, link = self._find_link(op)
+        link.set(R_ID, self.pkg.add_relationship(HYPERLINK_REL, op.url, external=True))
+        link.attrib.pop(qn("w:anchor"), None)
+        self._touch(el)
+        text = "".join(t.text or "" for t in link.iter(W.t))
+        self._record(idx, "set_hyperlink_url", bid, text, f"{text} → {op.url}")
+
+    # ------------------------------------------------------- headers/footers
+    def _create_header_footer(self, idx: int, op: CreateHeaderFooter) -> None:
+        ref_tag = qn("w:headerReference") if op.kind == "header" else qn("w:footerReference")
+        sects = list(self.pkg.body.iter(W.sectPr))
+        lacking = [s for s in sects if not any(
+            r.tag == ref_tag and (r.get(W.type) or "default") == "default" for r in s)]
+        if not lacking:
+            have = ", ".join(h.label for h in self.pkg.hf_parts if h.kind == op.kind)
+            raise EditError(f"The document already has a {op.kind} ({have}); edit its "
+                            f"paragraphs ({have}.p0, ...) instead.")
+        text = _check_inline_text(op.text, "text") if op.text else ""
+        if not text and not op.page_numbers:
+            raise EditError("Give the header/footer some text or page_numbers=true.")
+        style = op.kind.capitalize() if op.kind.capitalize() in self.pkg.paragraph_styles \
+            else None
+        root = build_header_footer(op.kind, text, op.page_numbers, op.align, style)
+        name = self.pkg.new_part_name(op.kind)
+        self.pkg.add_part(name, root, HEADER_CT if op.kind == "header" else FOOTER_CT)
+        rid = self.pkg.add_relationship(HEADER_REL if op.kind == "header" else FOOTER_REL,
+                                        name.rsplit("/", 1)[-1])
+        for sect in lacking:
+            ref = etree.Element(ref_tag)
+            ref.set(W.type, "default")
+            ref.set(R_ID, rid)
+            refs = (qn("w:headerReference"),) if op.kind == "header" else \
+                (qn("w:headerReference"), qn("w:footerReference"))
+            at = 0
+            while at < len(sect) and sect[at].tag in refs:
+                at += 1
+            sect.insert(at, ref)
+        label = f"{'hdr' if op.kind == 'header' else 'ftr'}{len(self.pkg.hf_parts) + 1}"
+        self.pkg.hf_parts.append(HeaderFooterPart(label, op.kind, name, root, ["new"],
+                                                  b"", created=True))
+        self._record(idx, "create_header_footer", op.kind, None,
+                     (text + (" [page number]" if op.page_numbers else "")).strip())
 
 
 def apply_plan(pkg: DocxPackage, plan: EditPlan) -> ApplyResult:

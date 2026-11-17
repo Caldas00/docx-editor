@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from docx_agent.document import DocxPackage  # noqa: E402
 from docx_agent.samples import (  # noqa: E402
     build_api_reference,
+    build_intake_form,
     build_referral_letter,
     build_session_note,
 )
@@ -28,6 +29,11 @@ def referral_bytes() -> bytes:
 @pytest.fixture(scope="session")
 def api_reference_bytes() -> bytes:
     return build_api_reference()
+
+
+@pytest.fixture(scope="session")
+def intake_bytes() -> bytes:
+    return build_intake_form()
 
 
 @pytest.fixture()

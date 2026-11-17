@@ -103,7 +103,7 @@ def test_detects_modified_other_part(edited):
                 payload = payload.replace(b"Calibri", b"Comic Sans MS")
             z.writestr(info, payload)
     names = failing(verify_edit(before, out.getvalue(), PLAN))
-    assert "Styles, headers/footers, media and all other parts untouched" in names
+    assert "Styles, media, metadata and other parts untouched" in names
 
 
 def test_detects_unreadable_output(edited):
@@ -213,3 +213,58 @@ def test_detects_table_created_without_plan(api_reference_bytes):
     tbl = build_index(work).get("t0").element
     tbl.addnext(_copy.deepcopy(tbl))
     assert "Block structure matches the plan" in failing(verify_edit(before, work.to_bytes(), p))
+
+
+# ------------------------------------------- moves, headers/footers, links (mutations)
+def _apply(pkg_bytes, *ops):
+    before = DocxPackage(pkg_bytes)
+    p = plan(*ops)
+    work = before.copy()
+    apply_plan(work, p)
+    assert verify_edit(before, work.to_bytes(), p).passed
+    return before, work, p
+
+
+def test_detects_paragraph_moved_to_the_wrong_place(session_note_bytes):
+    before, work, p = _apply(session_note_bytes, {"op": "move_blocks", "block_ids": ["p8"],
+                                                  "target_id": "p10", "position": "after"})
+    moved = build_index(work).get("p10").element  # 'p8' text now sits at index 10
+    moved.getparent().remove(moved)
+    build_index(work).get("p0").element.addnext(moved)
+    names = failing(verify_edit(before, work.to_bytes(), p))
+    assert names & {"Untouched blocks are XML-identical", "Edited text matches the plan exactly",
+                     "Block structure matches the plan"}
+
+
+def test_detects_unplanned_footer_change(session_note_bytes):
+    before, work, p = _apply(session_note_bytes, {"op": "replace_text", "block_id": "hdr1.p0",
+                                                  "find": "Confidential",
+                                                  "replace_with": "Private"})
+    ftr = build_index(work).get("ftr1.p0").element
+    ftr.find(".//" + W.t).text = "Pg "
+    assert "Untouched blocks are XML-identical" in failing(verify_edit(before, work.to_bytes(), p))
+
+
+def test_detects_link_pointing_elsewhere(session_note_bytes):
+    from docx_agent.document.ns import qn
+    before, work, p = _apply(session_note_bytes, {"op": "set_hyperlink_url", "block_id": "p19",
+                                                  "find": "leaflet",
+                                                  "url": "https://example.org/new"})
+    link = build_index(work).get("p19").element.find(W.hyperlink)
+    link.set(qn("r:id"), work.add_relationship(
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+        "https://evil.example", external=True))
+    names = failing(verify_edit(before, work.to_bytes(), p))
+    assert "Formatting preserved in edited paragraphs" in names
+    assert "Styles, media, metadata and other parts untouched" in names
+
+
+def test_detects_created_footer_with_other_text(referral_bytes):
+    before, work, p = _apply(referral_bytes, {"op": "create_header_footer", "kind": "footer",
+                                              "text": "Lumen"})
+    created = [h for h in work.hf_parts if h.created][0]
+    created.root.find(".//" + W.t).text = "Someone else"
+    data = work.to_bytes()
+    # the created part is serialised from its tree, so the tamper reaches the output
+    assert "Styles, media, metadata and other parts untouched" in failing(
+        verify_edit(before, data, p))

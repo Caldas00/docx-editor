@@ -577,3 +577,9 @@ def test_table_inside_a_cell():
     out, _ = run_plan(pkg, new_table(target="t0.r0.c0.p0", format_like="t0.r0.c0.p0"))
     t = texts(out)
     assert t["t0.r0.c0.t0.r1.c0.p0"] == "2" and t["t0.r0.c0.p1"] == ""
+
+
+def test_not_found_points_to_the_right_block():
+    pkg = pkg_of(P(R("first line")) + P(R("second line")))
+    with pytest.raises(EditError, match="It does appear in p0"):
+        run_plan(pkg, replace("first", "1st", block_id="p1"))

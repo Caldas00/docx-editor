@@ -274,7 +274,7 @@ def paragraph_view(p: etree._Element) -> ParagraphView:
 
 
 # --------------------------------------------------------------------- blocks
-BlockKind = Literal["paragraph", "table"]
+BlockKind = Literal["paragraph", "table", "part"]
 
 
 @dataclass
@@ -349,9 +349,18 @@ def _walk_container(
 
 
 def build_index(pkg: DocxPackage) -> DocumentIndex:
+    """Body blocks first (p0, t0, ...), then each header/footer part (hdr1.p0, ftr1.t0...)."""
     blocks: list[Block] = []
     _walk_container(pkg.body, "", blocks, 0, None, {"p": 0, "t": 0})
+    for hf in pkg.hf_parts:
+        blocks.append(Block(hf.label, "part", hf.root, depth=0))
+        _walk_container(hf.root, f"{hf.label}.", blocks, 1, None, {"p": 0, "t": 0})
     return DocumentIndex(blocks)
+
+
+def part_roots(pkg: DocxPackage) -> list[etree._Element]:
+    """Containers the agent edits: the body, then every header/footer part."""
+    return [pkg.body] + [hf.root for hf in pkg.hf_parts]
 
 
 # ------------------------------------------------------------- descriptions
@@ -501,6 +510,11 @@ def protected_notes(view: ParagraphView) -> list[str]:
 
 def describe_block(pkg: DocxPackage, block: Block, max_text: int | None = None) -> str:
     indent = "  " * block.depth
+    if block.kind == "part":
+        hf = next((h for h in pkg.hf_parts if h.root is block.element), None)
+        kind = hf.kind.upper() if hf else "PART"
+        uses = "; ".join(hf.uses) if hf else ""
+        return f"[{block.id}] {kind} ({uses}) - its paragraphs follow"
     if block.kind == "table":
         headers = [i for i, tr in enumerate(block.element.findall(W.tr))
                    if tr.find(qn("w:trPr")) is not None

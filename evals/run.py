@@ -36,7 +36,7 @@ from docx_agent.document.model import (  # noqa: E402
     run_flags,
     run_props,
 )
-from docx_agent.document.ns import W  # noqa: E402
+from docx_agent.document.ns import W, qn  # noqa: E402
 from docx_agent.pricing import estimate_cost  # noqa: E402
 from docx_agent.service import EditService  # noqa: E402
 
@@ -46,7 +46,8 @@ SAMPLES = ROOT / "samples" / "input"
 def paragraphs(path: Path) -> list[tuple[str, str, object]]:
     pkg = DocxPackage(path.read_bytes())
     return [(paragraph_view(b.element).text, paragraph_style(pkg, b.element), b.element)
-            for b in build_index(pkg).paragraphs()]
+            for b in build_index(pkg).paragraphs()
+            if not b.id.startswith(("hdr", "ftr"))]  # body only; headers/footers checked apart
 
 
 def changed_count(before: list[str], after: list[str]) -> int:
@@ -117,6 +118,52 @@ def check(expect: dict, outcome, src: Path, out: Path) -> list[str]:
                               f"wanted #{color}")
         if not hit:
             errors.append(f"missing {needle!r}")
+    texts_in_order = [t for t, _, _ in after]
+    def index_of(needle: str) -> int:
+        return next((i for i, t in enumerate(texts_in_order) if needle in t), -1)
+    for a, b in expect.get("order", []):
+        ia, ib = index_of(a), index_of(b)
+        if ia < 0 or ib < 0 or ia >= ib:
+            errors.append(f"{a!r} should come before {b!r} (positions {ia}, {ib})")
+    for a, b in expect.get("same_paragraph", []):
+        if not any(a in t and b in t for t in texts_in_order):
+            errors.append(f"{a!r} and {b!r} are not in the same paragraph")
+    for needle in expect.get("starts_paragraph", []):
+        if not any(t.startswith(needle) for t in texts_in_order):
+            errors.append(f"no paragraph starts with {needle!r}")
+    for needle, n in expect.get("count", []):
+        if full.count(needle) != n:
+            errors.append(f"{needle!r} appears {full.count(needle)} times (wanted {n})")
+    if "page_breaks" in expect:
+        n = sum(1 for br in pkg.body.iter(W.br) if br.get(W.type) == "page")
+        if n != expect["page_breaks"]:
+            errors.append(f"{n} page breaks (wanted {expect['page_breaks']})")
+    top_tables = [b for b in build_index(pkg).blocks if b.kind == "table" and b.depth == 0]
+    if "top_tables" in expect and len(top_tables) != expect["top_tables"]:
+        errors.append(f"{len(top_tables)} top-level tables (wanted {expect['top_tables']})")
+    if "table_cols" in expect and [t.cols for t in top_tables] != expect["table_cols"]:
+        errors.append(f"table columns {[t.cols for t in top_tables]} "
+                      f"(wanted {expect['table_cols']})")
+    for needle, url in expect.get("link_targets", []):
+        found = None
+        for link in pkg.body.iter(W.hyperlink):
+            if needle in "".join(x.text or "" for x in link.iter(W.t)):
+                rel = pkg.relationships.get(link.get(qn("r:id")) or "")
+                found = rel.target if rel else None
+        if found != url:
+            errors.append(f"{needle!r} links to {found!r}, wanted {url!r}")
+    for needle in expect.get("no_link", []):
+        for link in pkg.body.iter(W.hyperlink):
+            if needle in "".join(x.text or "" for x in link.iter(W.t)):
+                errors.append(f"{needle!r} is still a link")
+    hf_text = " ".join("".join(x.text or "" for x in hf.root.iter(W.t)) for hf in pkg.hf_parts)
+    for needle in expect.get("hf_contains", []):
+        if needle not in hf_text:
+            errors.append(f"headers/footers do not contain {needle!r}")
+    if expect.get("footer_page_number") and not any(
+            hf.kind == "footer" and any("PAGE" in (i.text or "") for i in hf.root.iter(W.instrText))
+            for hf in pkg.hf_parts):
+        errors.append("no footer with a page number")
     if "images" in expect:
         n = sum(1 for _ in pkg.body.iter(W.drawing))
         if n != expect["images"]:

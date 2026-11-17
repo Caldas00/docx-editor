@@ -102,6 +102,7 @@ button, input, textarea { font: inherit; color: inherit; }
 .banner { display: flex; gap: 10px; align-items: center; padding: 7px 16px; background: var(--warn-soft); color: var(--warn); font-size: 12.5px; border-bottom: 1px solid #f3dfc0; }
 .legend { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 6px 16px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); background: var(--surface-2); }
 .legend-note { margin-left: auto; color: var(--faint); }
+.legend-moved { border-left: 3px solid #3b82f6; padding-left: 5px; }
 
 /* --------------------------------------------------------------------- paper */
 .paper-wrap { flex: 1; overflow: auto; padding: 24px 20px 64px; }
@@ -131,6 +132,14 @@ button, input, textarea { font: inherit; color: inherit; }
 .paper table.doc-table td { border: 1px solid #b7bec6; padding: 4px 7px; vertical-align: top; }
 .paper table.doc-table td .para { margin: 0; }
 
+/* headers / footers */
+.paper .hf { border: 1px dashed #c7cdd4; border-radius: 4px; padding: 6px 10px 2px; margin: 0 0 16pt; position: relative; color: #3a4148; }
+.paper .hf + .para, .paper .para + .hf, .paper .doc-table + .hf { margin-top: 18pt; }
+.paper .hf-label { display: block; font: 600 10px var(--font); text-transform: uppercase; letter-spacing: .05em; color: var(--faint); margin-bottom: 4px; }
+.paper .hf.block-ins { border-color: #22c55e; background: #f0fbf3; box-shadow: none; }
+.paper .page-break::after { content: "page break"; position: absolute; left: 50%; transform: translate(-50%, -50%); background: #fff; padding: 0 6px; font: 10px var(--font); color: var(--faint); }
+.paper .page-break { position: relative; }
+
 /* redline marks */
 ins, del { text-decoration: none; border-radius: 2px; }
 ins { background: var(--ins); color: var(--ins-text); box-shadow: inset 0 -2px 0 #4ade80; }
@@ -139,6 +148,7 @@ del img { opacity: .45; outline: 2px solid #ef4444; }
 .fmt-changed { box-shadow: inset 0 -2px 0 #818cf8; border-radius: 2px; background: var(--fmt); }
 .paper .block-ins { box-shadow: -10px 0 0 #fff, -13px 0 0 #22c55e; }
 .paper .block-del { box-shadow: -10px 0 0 #fff, -13px 0 0 #ef4444; opacity: .85; }
+.paper .block-moved { box-shadow: -10px 0 0 #fff, -13px 0 0 #3b82f6; }
 .paper tr.row-ins td { background: #f0fbf3; box-shadow: inset 3px 0 0 #22c55e; }
 .paper tr.row-del td { background: #fef4f4; }
 .paper table.tbl-del { outline: 2px solid #fca5a5; opacity: .8; }
