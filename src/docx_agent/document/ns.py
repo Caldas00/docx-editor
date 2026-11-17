@@ -93,6 +93,7 @@ class W:
     gridSpan = qn("w:gridSpan")
     vMerge = qn("w:vMerge")
     tcPr = qn("w:tcPr")
+    w_attr = qn("w:w")
 
 
 class M:

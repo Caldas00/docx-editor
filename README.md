@@ -3,7 +3,9 @@
 A LangGraph agent that edits **existing Word (.docx) documents** from natural-language
 instructions, and changes **only** what the instruction requires. Examples: "change the session
 number to 7 of 12", "make all the green text purple", "remove the emojis", "delete the
-set_date row from the table", or "make this bold" with text selected. Styles, run formatting,
+set_date row from the table", "make a table with 1 to 10", or "make this bold" with text
+selected. It remembers the conversation, so "give it the same colour as the warning" or
+answering its own question works. Styles, run formatting,
 tables, images, links, fields, comments, headers and footers outside the edit stay exactly as
 they were, and every edit is checked mechanically before it is saved.
 
@@ -45,20 +47,23 @@ uv run docx-agent apply samples/input/session_note.docx \
 **Tests and evals**
 
 ```bash
-uv run pytest                    # 140 offline tests (no network, about 14 s)
+uv run pytest                    # 150 offline tests (no network, about 15 s)
 uv run pytest -m llm             # end-to-end tests against the real API
-uv run python evals/run.py       # behavioural evals against the real API (30 cases)
+uv run python evals/run.py       # behavioural evals against the real API (36 cases)
 ```
 
 **Using the web UI**
 - **Open** a document from the start page (drop a file or pick a sample) or with **Open
   document** in the toolbar at any time. The logo returns to the start page.
-- **Select text** in the preview to point at it, as in an editor chat. The selection, with the
-  block ids it covers, is sent with your message, so "make this bold" or "translate this" act
-  on it.
-- **The chat** keeps the whole conversation. Each answer shows what changed, the integrity
-  report, the plan, the time taken and the cost. Questions from the agent appear as buttons;
-  you can also type the answer.
+- **Select text** in the preview exactly as you would to copy it. The selection stays
+  highlighted in green while you type, and the exact text, with the block ids it covers, goes
+  with your next message. So "make this bold", "apaga" or "translate this" act on precisely
+  that text.
+- **The chat remembers the conversation.** Every message starts a fresh run on the latest
+  version, with a compact transcript of the earlier messages and the edits made. This
+  resolves "the same colours as the others", "make it bold" and answers to the agent's own
+  questions. Each reply shows what changed, the integrity report, the plan, the time taken and
+  the cost; questions come with quick-reply buttons.
 - **Changes / Clean** toggles the redline. Every edit is a version you can view, download or
   undo.
 
@@ -76,7 +81,7 @@ src/docx_agent/
   document/            deterministic core (no LLM)
     package.py         opens the .docx zip, rewrites only word/document.xml
     model.py           text view: blocks with stable ids, paragraphs as "pieces"
-    ops.py             the 11 edit operations + run-level edit engine
+    ops.py             the 12 edit operations + run-level edit engine
     oracle.py          replays a plan on plain strings (independent model)
     verify.py          9 integrity checks: before vs. after vs. oracle
     render.py          HTML preview + redline for the UI
@@ -85,6 +90,7 @@ src/docx_agent/
     tools.py           tool schemas exposed to the LLM
     prompts.py         planner system prompt
   service.py           run / resume (human-in-the-loop) API used by CLI and web
+  conversation.py      transcript of earlier chat turns (conversation memory)
   cli.py, web/         Typer CLI, FastAPI app + static frontend (no build step)
 ```
 
@@ -154,6 +160,7 @@ correction hint.
 | `delete_table_rows` | Delete whole rows (`t1.r23`). It is refused if it would empty the table, or if a row starts a vertical merge that continues below. |
 | `insert_table_row` | Insert a row next to an existing one, one text per cell. It copies a template row's properties and each cell's first paragraph, never as a header row and never vertically merged. |
 | `delete_table` | Delete a whole table. |
+| `insert_table` | Create a new table from rows of cell texts, with an optional bold, repeating header row. It copies an existing table's look (`table_like`) or uses single borders across the text width, and adds an empty paragraph where Word needs one (between two tables, or at the end of the body or a cell). |
 
 Row ids keep their original numbering for the whole plan, so "delete r3, then insert after
 r5" means the rows the planner saw.
@@ -212,7 +219,7 @@ Python strings and tracks the origin of every character.
 9. OOXML structure rules hold: every table cell ends with a paragraph, and the body ends with
    its `sectPr`.
 
-**2. Offline test suite (140 tests, about 14 s, no network)**
+**2. Offline test suite (150 tests, about 15 s, no network)**
 
 - **Engine unit tests** (`test_ops.py`) cover each operation and each refusal. They use
   synthetic XML with split runs, hyperlinks, fields, tracked changes, content controls,
@@ -222,10 +229,11 @@ Python strings and tracks the origin of every character.
   buggy editor would, and check that the verifier catches each case. The tampering includes
   changing an untouched paragraph, dropping bold from an edited paragraph, adding text,
   restyling a new paragraph, deleting an image, deleting a paragraph and editing `styles.xml`.
-- **A fuzz test** (`test_fuzz.py`) runs 750 random plans, mixing all 11 operations, on three
+- **A fuzz test** (`test_fuzz.py`) runs 750 random plans, mixing all 12 operations, on three
   sample documents. Each plan is either refused with an `EditError` or passes every check;
-  nothing is silently corrupted. About 430 of them are applied and verified. The fuzz test
-  found two real interaction bugs while the table and restyle operations were being added.
+  nothing is silently corrupted. About 440 of them are applied and verified. While the table
+  and restyle operations were being built, the fuzz test found four real interaction bugs,
+  e.g. a new table inside a row that a later operation deletes.
 - **Graph tests** (`test_graph.py`) use a scripted LLM to exercise every route: happy path,
   exploration, error feedback and correction, schema errors, the retry limit, the
   clarification interrupt and resume, decline, nudge, the step limit and bad input.
@@ -242,25 +250,29 @@ Python strings and tracks the origin of every character.
 
 **3. Behavioural evals against the real model (`evals/`)**
 
-There are 30 cases across 4 documents. They cover replacements in table cells, global
+There are 36 cases across 4 documents, some of them multi-message conversations run
+exactly as the web UI runs them. They cover replacements in table cells, global
 renames, list items, sentence and paragraph deletion, new sections (heading and body),
 formatting, multi-edit instructions, link text, a word split across runs, an ambiguous date
 (which must trigger a clarification), out-of-scope requests (which must be declined), text that
 does not exist, a Portuguese instruction, a truncated outline (which forces the search tool),
 **a prompt injection inside the document**, recolouring ("make the green text purple"),
 removing icons, deleting, inserting and removing table rows and tables, highlight and colour,
-and instructions that refer to a selection ("make this bold", "traduz isto para português").
+instructions that refer to a selection ("make this bold", "traduz isto para português",
+"apaga" right after an unrelated question), new tables ("faz uma tabela … 1 até 10"), and
+follow-ups that only make sense with memory ("give it the same colour as the warning", "make
+it bold", answering the agent's question in a new message).
 Each case checks the outcome: required and forbidden text, the styles of new paragraphs, bold
 or italic, colours present or absent, picture count, table row counts and no empty rows, how
 many paragraphs changed (to catch over-editing), no new double spaces, and that verification
 passed. The runner also records token usage and estimated cost. Results are in
 [`evals/results/latest.md`](evals/results/latest.md) (latest run of the default model); the model comparison below is in [`evals/results/model-comparison.md`](evals/results/model-comparison.md).
 
-| model | passed (30 cases × 3 runs) | median latency | avg cost / edit |
+| model | passed (× 3 runs) | median latency | avg cost / edit |
 |---|---|---|---|
-| **gpt-6-luna** (default, low reasoning) | **90/90** | 2.4 s | **$0.0001** |
-| gpt-5.4-mini | 90/90 | 2.2 s | $0.0012 |
-| gpt-5-mini | 90/90 | 3.3 s | $0.0007 |
+| **gpt-6-luna** (default, low reasoning) | **108/108** (36 cases) | 2.3 s | **$0.0001** |
+| gpt-5.4-mini | 90/90 (first 30 cases) | 2.2 s | $0.0012 |
+| gpt-5-mini | 90/90 (first 30 cases) | 3.3 s | $0.0007 |
 | gpt-5.5 (previous default) | 30/30 (1 run) | 2.3 s | $0.0118 |
 
 The prompt was tuned against this suite. The first gpt-4.1 run scored 16/18; the two failures

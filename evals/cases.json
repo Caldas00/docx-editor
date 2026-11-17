@@ -454,5 +454,146 @@
       ],
       "max_changed": 1
     }
+  },
+  {
+    "id": "followup-same-colours",
+    "doc": "api_reference.docx",
+    "instruction": "Add a paragraph 'Remember: call close() when you are done.' right after the warning.",
+    "expect": {
+      "status": "done",
+      "doc_contains": [
+        "Remember: call close() when you are done."
+      ]
+    },
+    "followups": [
+      {
+        "instruction": "give it the same colour as the warning",
+        "expect": {
+          "status": "done",
+          "color_of": [
+            [
+              "call close() when you are done.",
+              "FF0000"
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "followup-make-it-bold",
+    "doc": "session_note.docx",
+    "instruction": "Add 'Grounding exercise (5-4-3-2-1)' as another intervention used.",
+    "expect": {
+      "status": "done",
+      "doc_contains": [
+        "Grounding exercise (5-4-3-2-1)"
+      ]
+    },
+    "followups": [
+      {
+        "instruction": "make it bold",
+        "expect": {
+          "status": "done",
+          "bold": [
+            "Grounding exercise (5-4-3-2-1)"
+          ],
+          "max_changed": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "answer-question-in-new-message",
+    "doc": "session_note.docx",
+    "instruction": "Change the date to 20 November 2026.",
+    "expect": {
+      "status": "needs_clarification"
+    },
+    "followups": [
+      {
+        "instruction": "the next appointment",
+        "expect": {
+          "status": "done",
+          "doc_contains": [
+            "20 November 2026 at 10:00"
+          ],
+          "doc_not_contains": [
+            "19 November 2026"
+          ],
+          "max_changed": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "selection-after-question",
+    "doc": "api_reference.docx",
+    "instruction": "change the colour of the text",
+    "expect": {
+      "status": [
+        "needs_clarification",
+        "declined"
+      ]
+    },
+    "followups": [
+      {
+        "instruction": "apaga",
+        "selection": {
+          "text": "void\tset_date(Date d)\tSets the session date.",
+          "blocks": [
+            "t0.r4.c0.p0",
+            "t0.r4.c1.p0",
+            "t0.r4.c2.p0",
+            "t0.r4"
+          ]
+        },
+        "expect": {
+          "status": "done",
+          "doc_not_contains": [
+            "set_date(Date d)"
+          ],
+          "table_rows": [
+            7
+          ],
+          "no_empty_rows": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "new-table-1-to-10",
+    "doc": "api_reference.docx",
+    "instruction": "faz uma tabela no fim, só a dizer 1 até 10 em cada linha",
+    "expect": {
+      "status": "done",
+      "table_rows": [
+        8,
+        10
+      ],
+      "doc_contains": [
+        "10"
+      ],
+      "no_empty_rows": true
+    }
+  },
+  {
+    "id": "new-table-no-existing-table",
+    "doc": "session_note.docx",
+    "instruction": "After the Plan list, add a table with a header row 'Week' / 'Goal' and two rows: '1' / 'Two thought records', '2' / 'One behavioural experiment'.",
+    "expect": {
+      "status": "done",
+      "table_rows": [
+        5,
+        3
+      ],
+      "doc_contains": [
+        "Two thought records",
+        "One behavioural experiment"
+      ],
+      "bold": [
+        "Goal"
+      ]
+    }
   }
 ]

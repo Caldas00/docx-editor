@@ -55,6 +55,7 @@ class AgentState(TypedDict, total=False):
     input_path: str
     output_path: str
     selection: dict[str, Any] | None  # {"text": str, "blocks": [ids]} from the UI
+    history: str | None  # transcript of earlier turns (see docx_agent.conversation)
     # working data
     doc_name: str
     messages: Annotated[list[AnyMessage], add_messages]
@@ -101,7 +102,9 @@ class DocxEditAgent:
             DocxPackage(Path(state["input_path"]).read_bytes())  # fail fast on bad input
         except (OSError, DocxError) as exc:
             return {"status": "failed", "message": f"Could not open the document: {exc}"}
-        content = state["instruction"]
+        history = (state.get("history") or "").strip()
+        content = (f"{history}\n\nCurrent message: {state['instruction']}" if history
+                   else state["instruction"])
         sel = state.get("selection") or {}
         if (sel.get("text") or "").strip():
             content += SELECTION_NOTE.format(

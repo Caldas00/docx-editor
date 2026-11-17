@@ -24,8 +24,10 @@ def client(tmp_path, monkeypatch):
     web.set_service(None)
 
 
-def use_script(*script):
-    web.set_service(EditService(ScriptedLLM(script=list(script), seen=[]), Settings()))
+def use_script(*script) -> ScriptedLLM:
+    llm = ScriptedLLM(script=list(script), seen=[])
+    web.set_service(EditService(llm, Settings()))
+    return llm
 
 
 def test_index_and_config(client):
@@ -60,15 +62,29 @@ def test_edit_flow_with_redline_download_and_undo(client):
     assert client.post(f"/api/sessions/{s['id']}/undo").status_code == 409
 
 
-def test_clarification_round_trip(client):
-    use_script(call("ask_clarification", question="Which one?", options=["A", "B"]), submit(GOOD))
+def test_answer_is_a_new_message_that_sees_the_question(client):
+    llm = use_script(call("ask_clarification", question="Which one?", options=["A", "B"]),
+                     submit(GOOD))
     s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
-    r = client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "x"}).json()
+    r = client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "change it"}).json()
     assert r["turn"]["status"] == "needs_clarification"
-    assert r["turn"]["options"] == ["A", "B"] and r["session"]["pending"] is True
-    r2 = client.post(f"/api/sessions/{s['id']}/answer", json={"answer": "A"}).json()
+    assert r["turn"]["options"] == ["A", "B"]
+    r2 = client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "A"}).json()
     assert r2["turn"]["status"] == "done" and r2["session"]["version"] == 1
-    assert r2["turn"]["answers"] == [{"question": "Which one?", "answer": "A"}]
+    assert [t["status"] for t in r2["session"]["turns"]] == ["needs_clarification", "done"]
+    prompt = llm.seen[1][1].content
+    assert "<conversation>" in prompt and "Assistant asked: Which one?" in prompt
+    assert prompt.endswith("Current message: A")
+
+
+def test_history_includes_previous_edits(client):
+    llm = use_script(submit(GOOD), submit({"op": "format_text", "block_id": "t0.r2.c1.p0",
+                                           "find": "7 of 12", "bold": True}))
+    s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
+    client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "session 7"})
+    client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "make it bold"})
+    prompt = llm.seen[1][1].content
+    assert 'changed "6 of 12" → "7 of 12"' in prompt
 
 
 def test_decline_keeps_version(client):
@@ -95,11 +111,3 @@ def test_upload_validation(client, session_note_bytes):
 def test_unknown_session_and_sample(client):
     assert client.get("/api/sessions/nope").status_code == 404
     assert client.post("/api/sessions/sample", json={"name": "../secret"}).status_code == 404
-
-
-def test_new_instruction_abandons_pending_question(client):
-    use_script(call("ask_clarification", question="Which?", options=["A"]), submit(GOOD))
-    s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
-    client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "x"})
-    r = client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "y"}).json()
-    assert [t["status"] for t in r["session"]["turns"]] == ["abandoned", "done"]

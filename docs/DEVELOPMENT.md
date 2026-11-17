@@ -65,6 +65,24 @@ architecture discussion  →  vertical slice  →  verification harness  →  ev
    The same iteration replaced the expensive default model: the evals showed `gpt-6-luna`
    at 90/90 for about 1 % of `gpt-5.5`'s cost.
 
+8. **Third iteration.** The second round of user feedback:
+   - "it has no memory of the conversation",
+   - "the selection should work like normal text selection",
+   - "it ignored what I selected",
+   - "make me a table".
+
+   The cause of the second and third reports was one design flaw: a reply sent while a
+   question was pending was routed as the answer to that question, and the selection was
+   dropped. The fix removed the flaw instead of patching it:
+   - **Every message is a new run:** each chat message starts a new run on the latest
+     version, with a transcript of the conversation (`conversation.py`).
+   - **Native selection:** the selection is the browser's own, kept green with the CSS
+     Custom Highlight API.
+   - **New tables:** `insert_table` joined the engine, oracle, verifier and fuzz test.
+
+   Five multi-message eval cases now pin the behaviour down (108/108). The fuzz test caught
+   two more table edge cases along the way.
+
 ## 2. How AI-generated code is verified
 
 The core idea is to make correctness **checkable by a machine**, so that "the agent says it

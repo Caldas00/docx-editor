@@ -24,7 +24,14 @@ def random_op(rng: random.Random, pkg: DocxPackage) -> dict | None:
     text = paragraph_view(block.element).text
     kind = rng.choice(["replace", "replace", "delete", "insert_text", "insert_par",
                        "delete_par", "format", "restyle", "images", "rows", "insert_row",
-                       "delete_table"])
+                       "delete_table", "new_table"])
+    if kind == "new_table":
+        ncols = rng.randint(1, 3)
+        return {"op": "insert_table", "target_id": rng.choice([block.id] + [t.id for t in tables]),
+                "position": rng.choice(["before", "after"]),
+                "rows": [[rng.choice(WORDS) for _ in range(ncols)] for _ in range(rng.randint(1, 4))],
+                "header": rng.choice([True, False]), "format_like": rng.choice(blocks).id,
+                "table_like": rng.choice([None] + [t.id for t in tables])}
     if kind == "restyle":
         return {"op": "restyle_text", "block_id": rng.choice([None, block.id]),
                 "match": rng.choice([{"color": rng.choice(COLORS[:2])}, {"bold": True}]),

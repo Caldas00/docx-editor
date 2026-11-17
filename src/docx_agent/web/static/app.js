@@ -16,6 +16,7 @@ const OPS = {
   format_text: ["style", "format"], restyle_text: ["style", "restyle"],
   delete_images: ["remove", "pictures removed"], delete_table_row: ["remove", "row removed"],
   insert_table_row: ["add", "new row"], delete_table: ["remove", "table removed"],
+  insert_table: ["add", "new table"],
 };
 
 const ICON = {
@@ -93,7 +94,7 @@ function goHome() {
 function showSession(s) {
   const switched = !state.session || state.session.id !== s.id;
   state.session = s;
-  if (switched) { clearSelection(); state.expanded.clear(); }
+  if (switched) state.expanded.clear();
   document.body.classList.remove("no-doc");
   $("home").hidden = true;
   $("workspace").hidden = false;
@@ -120,7 +121,7 @@ function renderDocument() {
   $("old-version-text").textContent = `You are viewing version ${s.version} of ${s.latest}. New edits apply to the latest version.`;
   $("download-btn").href = `/api/sessions/${s.id}/download?version=${s.version}`;
   $("undo-btn").disabled = s.latest === 0 || state.busy;
-  markSelection();
+  if (state.selection) clearSelection(); // the highlighted range belonged to the old page
 }
 
 async function viewVersion(v) {
@@ -130,40 +131,39 @@ async function viewVersion(v) {
 }
 
 /* ================================================================ selection */
+// Works like selecting text to copy it: whatever you highlight in the preview is kept (painted
+// green) after you click into the chat box, and is sent with your next message.
 function captureSelection() {
   const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !state.session) return;
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !state.session) return;
   const range = sel.getRangeAt(0);
   const paper = $("paper");
   if (!paper.contains(range.commonAncestorContainer)) return;
-  const text = sel.toString().replace(/\s+\n/g, "\n").trim();
+  const text = sel.toString().replace(/[ \t]+\n/g, "\n").trim();
   if (!text) return;
   if (state.session.version !== state.session.latest) {
-    toast("Selections work on the latest version - click “Back to latest”.");
+    toast("Select text on the latest version - click “Back to latest”.");
     return;
   }
   const paras = [...paper.querySelectorAll(".para[data-bid]")].filter((el) => range.intersectsNode(el));
   const rows = [...paper.querySelectorAll("tr[data-row]")].filter((el) => range.intersectsNode(el));
   const blocks = paras.map((el) => el.dataset.bid);
   if (rows.length && paras.length > 1) blocks.push(...rows.map((el) => el.dataset.row));
-  state.selection = { text: text.slice(0, 4000), blocks: [...new Set(blocks)].slice(0, 60) };
+  state.selection = { text: text.slice(0, 4000), blocks: [...new Set(blocks)].slice(0, 60), range: range.cloneRange() };
+  paintSelection();
   updateComposer();
-  markSelection();
 }
 function clearSelection() {
   state.selection = null;
+  paintSelection();
   updateComposer();
-  markSelection();
 }
-function markSelection() {
-  const paper = $("paper");
-  paper.querySelectorAll(".sel-ref").forEach((el) => el.classList.remove("sel-ref"));
-  if (!state.selection) return;
-  state.selection.blocks.forEach((id) => {
-    const el = paper.querySelector(`[data-bid="${CSS.escape(id)}"]`);
-    if (el && el.classList.contains("para")) el.classList.add("sel-ref");
-  });
+function paintSelection() {
+  if (!(window.CSS && CSS.highlights && window.Highlight)) return;
+  CSS.highlights.delete("docx-selection");
+  if (state.selection && state.selection.range) CSS.highlights.set("docx-selection", new Highlight(state.selection.range));
 }
+const selectionPayload = () => state.selection && { text: state.selection.text, blocks: state.selection.blocks };
 
 /* ===================================================================== chat */
 function renderChat(pendingInstruction) {
@@ -188,7 +188,7 @@ function renderChat(pendingInstruction) {
     autoGrow();
     $("instruction").focus();
   }));
-  box.querySelectorAll("[data-answer]").forEach((b) => b.addEventListener("click", () => sendAnswer(b.dataset.answer)));
+  box.querySelectorAll("[data-answer]").forEach((b) => b.addEventListener("click", () => send(b.dataset.answer)));
   box.querySelectorAll("[data-version]").forEach((b) => b.addEventListener("click", () => viewVersion(Number(b.dataset.version))));
   box.querySelectorAll("[data-undo]").forEach((b) => b.addEventListener("click", undo));
   box.querySelectorAll("[data-more]").forEach((b) => b.addEventListener("click", () => {
@@ -205,26 +205,18 @@ function userBubble(text, selection) {
 
 function turnHtml(t) {
   const out = [userBubble(t.instruction, t.selection)];
-  for (const qa of t.answers || []) {
-    out.push(`<div class="msg agent"><div class="agent-top"><span class="status neutral">${ICON.ask} Question</span></div><div class="question">${esc(qa.question)}</div></div>`);
-    out.push(userBubble(qa.answer));
-  }
   const s = state.session;
   const meta = [t.seconds != null ? `${t.seconds}s` : null, t.cost != null ? `$${t.cost < 0.001 ? t.cost.toFixed(5) : t.cost.toFixed(4)}` : null].filter(Boolean).join(" · ");
   const metaHtml = meta ? `<span class="meta" title="${esc(t.model || "")} · ${t.llm_calls || 0} LLM call(s) · ${(t.usage && t.usage.input) || 0} input tokens">${meta}</span>` : "";
 
   if (t.status === "needs_clarification") {
-    const live = s.pending && t.index === s.turns.length - 1;
+    const live = t.index === s.turns.length - 1 && !state.busy;
     out.push(`<div class="msg agent">
       <div class="agent-top"><span class="status warn">${ICON.ask} Which one did you mean?</span>${metaHtml}</div>
       <div class="question">${esc(t.question)}</div>
       <div class="options">${(t.options || []).map((o) => `<button type="button" data-answer="${esc(o)}" ${live ? "" : "disabled"}>${esc(o)}</button>`).join("")}</div>
-      ${live ? '<div class="hint-line">Pick an option or type your answer below.</div>' : ""}
+      ${live ? '<div class="hint-line">Pick an option or just reply below.</div>' : ""}
     </div>`);
-    return out;
-  }
-  if (t.status === "abandoned") {
-    out.push(`<div class="msg agent muted"><div class="agent-top"><span class="status neutral">Question left unanswered</span></div></div>`);
     return out;
   }
   if (t.status === "declined" || t.status === "failed") {
@@ -301,8 +293,10 @@ function updateComposer() {
     $("sel-text").title = `${t}\n\nBlocks: ${state.selection.blocks.join(", ")}`;
     chip.hidden = false;
   } else chip.hidden = true;
-  const answering = s && s.pending;
-  $("instruction").placeholder = answering ? "Type your answer…" : state.selection ? "What should happen to the selection?" : "Describe the change…";
+  const last = s && s.turns.length ? s.turns[s.turns.length - 1] : null;
+  const asked = last && last.status === "needs_clarification";
+  $("instruction").placeholder = state.selection ? "What should happen to the selected text?"
+    : asked ? "Reply to the assistant…" : "Describe the change…";
   $("send-btn").disabled = state.busy;
   $("instruction").disabled = state.busy;
 }
@@ -328,39 +322,28 @@ function setBusy(on, pending) {
   $("undo-btn").disabled = on || !state.session || state.session.latest === 0;
 }
 
-async function submit() {
+function submit() {
   const text = $("instruction").value.trim();
+  if (text) send(text);
+}
+
+async function send(text) {
   if (!text || state.busy || !state.session) return;
-  if (state.session.pending) return sendAnswer(text);
-  const selection = state.selection;
+  const selection = selectionPayload();
   $("instruction").value = "";
   autoGrow();
   setBusy(true, { text, selection });
   try {
     const res = await post(`/api/sessions/${state.session.id}/edit`, { instruction: text, selection });
-    clearSelection();
     if (res.turn.status === "done") state.view = "redline";
     state.busy = false;
+    clearSelection();
     showSession(res.session);
     if (res.turn.status === "done") scrollToFirstChange();
   } catch (e) {
     toast(e.message);
-    $("instruction").value = text;
+    if (!$("instruction").value) $("instruction").value = text;
   } finally { setBusy(false); }
-}
-
-async function sendAnswer(answer) {
-  if (!answer || state.busy) return;
-  $("instruction").value = "";
-  autoGrow();
-  setBusy(true, { text: answer });
-  try {
-    const res = await post(`/api/sessions/${state.session.id}/answer`, { answer });
-    if (res.turn.status === "done") state.view = "redline";
-    state.busy = false;
-    showSession(res.session);
-    if (res.turn.status === "done") scrollToFirstChange();
-  } catch (e) { toast(e.message); } finally { setBusy(false); }
 }
 
 async function undo() {
@@ -382,8 +365,13 @@ $("instruction").addEventListener("keydown", (e) => {
 });
 $("instruction").addEventListener("input", autoGrow);
 $("sel-clear").addEventListener("click", clearSelection);
-$("paper").addEventListener("mouseup", () => setTimeout(captureSelection, 0));
-$("paper").addEventListener("keyup", captureSelection);
+// Any way of selecting text (drag, double/triple click, shift+arrows) ends up here.
+let selTimer = null;
+document.addEventListener("selectionchange", () => {
+  clearTimeout(selTimer);
+  selTimer = setTimeout(captureSelection, 120);
+});
+document.addEventListener("mouseup", () => setTimeout(captureSelection, 0));
 $("view-redline").addEventListener("click", () => { state.view = "redline"; renderDocument(); });
 $("view-clean").addEventListener("click", () => { state.view = "clean"; renderDocument(); });
 $("undo-btn").addEventListener("click", undo);

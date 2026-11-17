@@ -144,9 +144,9 @@ del img { opacity: .45; outline: 2px solid #ef4444; }
 .paper table.tbl-del { outline: 2px solid #fca5a5; opacity: .8; }
 .paper.clean ins { background: none; box-shadow: none; color: inherit; }
 
-/* selection the user points the assistant at */
-.paper .sel-ref { background: rgba(15, 118, 110, .07); box-shadow: -10px 0 0 rgba(255,255,255,0), -13px 0 0 var(--accent); }
-.paper ::selection { background: #b6e3dc; }
+/* text the user selected to point the assistant at: green, kept while typing */
+.paper ::selection { background: #86efac; }
+::highlight(docx-selection) { background-color: #86efac; }
 
 /* ---------------------------------------------------------------------- chat */
 .chat { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--surface-2); }
@@ -219,7 +219,7 @@ details.plan pre { font: 11px/1.5 var(--mono); background: #0f172a; color: #e2e8
 
 /* composer */
 .composer { padding: 10px 12px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.sel-chip { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding: 5px 8px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; }
+.sel-chip { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding: 5px 8px; border-radius: 8px; background: #dcfce7; color: #166534; font-size: 12.5px; border: 1px solid #bbf7d0; }
 .sel-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sel-clear { border: 0; background: none; color: inherit; font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .composer-box { display: flex; align-items: flex-end; gap: 8px; border: 1px solid var(--border-strong); border-radius: 12px; padding: 6px 6px 6px 12px; background: #fff; }

@@ -34,7 +34,11 @@ from .ops import (
     _strip_revision_markup,
     new_cell_skeleton,
     new_row_skeleton,
+    new_table_cell,
+    new_table_row,
+    new_table_skeleton,
     normalise_prop,
+    table_grid_widths,
 )
 from .oracle import OracleError, StreamItem, document_stream, replay
 from .package import DocxError, DocxPackage
@@ -328,13 +332,31 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
         if exp.before is not None:
             continue
         tpl = exp.template
+        if exp.kind == "tbl":  # a table created by insert_table
+            want = new_table_skeleton(before, tpl, exp.spec["ncols"])
+            exp.spec["widths"] = table_grid_widths(want)
+            if item_signature(act) != item_signature(StreamItem("tbl", want)):
+                new_bad.append("new table: table properties or column grid not as planned")
+            continue
+        if exp.kind == "tbl_end":
+            continue
         if exp.kind == "tr":
-            if item_signature(act) != item_signature(StreamItem("tr", new_row_skeleton(tpl))):
+            want = (new_table_row(exp.spec["header"]) if "header" in exp.spec
+                    else new_row_skeleton(tpl))
+            if item_signature(act) != item_signature(StreamItem("tr", want)):
                 new_bad.append("new row: row properties differ from its template row")
             continue
         if exp.kind == "tc":
-            if item_signature(act) != item_signature(StreamItem("tc", new_cell_skeleton(tpl))):
+            if "col" in exp.spec:
+                want = new_table_cell(exp.spec["table"].spec["widths"][exp.spec["col"]])
+            else:
+                want = new_cell_skeleton(tpl)
+            if item_signature(act) != item_signature(StreamItem("tc", want)):
                 new_bad.append("new row: cell properties differ from the template cell")
+            continue
+        if exp.spec.get("spacer"):
+            if act.element.find(W.pPr) is not None or paragraph_view(act.element).text:
+                new_bad.append("spacer paragraph after a new table is not empty")
             continue
         n_new += 1
         tpl_ppr = tpl.find(W.pPr)
@@ -368,6 +390,7 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
     for e in oracle.removed:  # paragraphs, rows, tables and pictures the plan deletes
         for k, v in count_elements(e).items():
             removed[k] += v
+    removed["tables"] -= oracle.added_tables  # tables the plan creates
     after_counts = count_elements(after.body)
     diffs = [f"{k}: {before_counts[k] - removed[k]} -> {after_counts[k]}"
              for k in before_counts if before_counts[k] - removed[k] != after_counts[k]]

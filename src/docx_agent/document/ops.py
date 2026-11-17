@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Literal
 
 from lxml import etree
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .model import (
     Block,
@@ -229,9 +229,35 @@ class DeleteTable(_Op):
     table_id: str = Field(description="Table id, e.g. 't1'.")
 
 
+class InsertTable(_Op):
+    """Create a new table next to an existing paragraph or table."""
+
+    op: Literal["insert_table"]
+    target_id: str = Field(description="Id of the paragraph or table to put the new table next to.")
+    position: Literal["before", "after"]
+    rows: list[list[str]] = Field(
+        min_length=1, max_length=200,
+        description="Cell texts, row by row; every row has the same number of cells "
+                    "('\\n' inside a cell = several paragraphs).",
+    )
+    header: bool = Field(default=False, description="First row is a header (bold, repeated).")
+    format_like: str = Field(description="A body paragraph whose text look the cells copy.")
+    table_like: str | None = Field(
+        default=None, description="Existing table whose borders/style/widths to copy; null = "
+                                  "a simple table with single borders.",
+    )
+
+    @model_validator(mode="after")
+    def _rectangular(self) -> InsertTable:
+        widths = {len(r) for r in self.rows}
+        if len(widths) != 1 or 0 in widths or max(widths) > 30:
+            raise ValueError("every row must have the same number of cells (1-30)")
+        return self
+
+
 EditOp = Annotated[
     ReplaceText | DeleteText | InsertText | InsertParagraph | DeleteParagraph | FormatText
-    | RestyleText | DeleteImages | DeleteTableRows | InsertTableRow | DeleteTable,
+    | RestyleText | DeleteImages | DeleteTableRows | InsertTableRow | DeleteTable | InsertTable,
     Field(discriminator="op"),
 ]
 
@@ -536,6 +562,83 @@ def new_cell_skeleton(template: etree._Element) -> etree._Element:
 def cell_template_paragraph(tc: etree._Element) -> etree._Element:
     p = tc.find(W.p)
     return p if p is not None else tc.find(".//" + W.p)
+
+
+_DEFAULT_TEXT_WIDTH = 9026  # twips: A4 with 2.54 cm margins
+
+
+def text_width_twips(pkg: DocxPackage) -> int:
+    """Usable page width of the document's last section, in twips."""
+    sect = pkg.body.find(W.sectPr)
+    if sect is None:
+        return _DEFAULT_TEXT_WIDTH
+    size, margins = sect.find(qn("w:pgSz")), sect.find(qn("w:pgMar"))
+
+    def num(el, attr, default):
+        v = el.get(qn(attr)) if el is not None else None
+        return int(v) if v and v.lstrip("-").isdigit() else default
+
+    width = num(size, "w:w", 11906) - num(margins, "w:left", 1440) - num(margins, "w:right", 1440)
+    return width if width > 1000 else _DEFAULT_TEXT_WIDTH
+
+
+def new_table_skeleton(pkg: DocxPackage, template: etree._Element | None,
+                       ncols: int) -> etree._Element:
+    """<w:tbl> with properties and column grid only. Copies ``template``'s look when given,
+    otherwise a plain table with single borders across the text width. Shared with the
+    verifier, which predicts new tables with it."""
+    tbl = etree.Element(W.tbl, nsmap=_W_NSMAP)
+    total = text_width_twips(pkg)
+    widths: list[int] | None = None
+    if template is not None:
+        tpl_pr = template.find(qn("w:tblPr"))
+        if tpl_pr is not None:
+            pr = _strip_revision_markup(copy.deepcopy(tpl_pr))
+            for found in pr.findall(qn("w:tblPrChange")):
+                pr.remove(found)
+            tbl.append(pr)
+        tpl_grid = template.find(qn("w:tblGrid"))  # direct child: ignore nested tables
+        grid = [int(g.get(qn("w:w"))) for g in (tpl_grid if tpl_grid is not None else [])
+                if g.tag == qn("w:gridCol") and (g.get(qn("w:w")) or "").isdigit()]
+        if len(grid) == ncols:
+            widths = grid
+        elif grid:
+            total = sum(grid)
+    if tbl.find(qn("w:tblPr")) is None:
+        pr = etree.SubElement(tbl, qn("w:tblPr"))
+        if "TableGrid" in pkg.style_names:
+            etree.SubElement(pr, qn("w:tblStyle")).set(W.val, "TableGrid")
+        etree.SubElement(pr, qn("w:tblW"), {W.w_attr: "0", W.type: "auto"})
+        if "TableGrid" not in pkg.style_names:
+            borders = etree.SubElement(pr, qn("w:tblBorders"))
+            for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
+                etree.SubElement(borders, qn(f"w:{side}"),
+                                 {W.val: "single", qn("w:sz"): "4", qn("w:space"): "0",
+                                  qn("w:color"): "auto"})
+        etree.SubElement(pr, qn("w:tblLook"), {W.val: "04A0"})
+    widths = widths or [total // ncols] * ncols
+    grid_el = etree.SubElement(tbl, qn("w:tblGrid"))
+    for w in widths:
+        etree.SubElement(grid_el, qn("w:gridCol")).set(qn("w:w"), str(w))
+    return tbl
+
+
+def new_table_row(header: bool) -> etree._Element:
+    tr = etree.Element(W.tr, nsmap=_W_NSMAP)
+    if header:
+        etree.SubElement(etree.SubElement(tr, qn("w:trPr")), qn("w:tblHeader"))
+    return tr
+
+
+def new_table_cell(width: int) -> etree._Element:
+    tc = etree.Element(W.tc, nsmap=_W_NSMAP)
+    etree.SubElement(etree.SubElement(tc, W.tcPr), qn("w:tcW"),
+                     {qn("w:w"): str(width), W.type: "dxa"})
+    return tc
+
+
+def table_grid_widths(tbl: etree._Element) -> list[int]:
+    return [int(g.get(qn("w:w"))) for g in tbl.find(qn("w:tblGrid"))]
 
 
 def removal_problem(el: etree._Element) -> str | None:
@@ -878,6 +981,8 @@ class DocumentEditor:
             self._insert_table_row(idx, op)
         elif isinstance(op, DeleteTable):
             self._delete_table(idx, op)
+        elif isinstance(op, InsertTable):
+            self._insert_table(idx, op)
         else:  # pragma: no cover - pydantic guarantees the union
             raise EditError(f"Unknown operation {op!r}")
 
@@ -1183,6 +1288,43 @@ class DocumentEditor:
         self.result.inserted += 1
         self._record(idx, "insert_table_row", f"{op.row} ({op.position})", None,
                      " | ".join(texts))
+
+    def _insert_table(self, idx: int, op: InsertTable) -> None:
+        target = self._block(op.target_id, ("paragraph", "table")).element
+        template_p = self._block(op.format_like).element
+        template_t = self._block(op.table_like, ("table",)).element if op.table_like else None
+        tbl = new_table_skeleton(self.pkg, template_t, len(op.rows[0]))
+        widths = table_grid_widths(tbl)
+        for r, row in enumerate(op.rows):
+            header = op.header and r == 0
+            tr = new_table_row(header)
+            for width, text in zip(widths, row):
+                tc = new_table_cell(width)
+                for line in text.replace("\r\n", "\n").split("\n"):
+                    p = self._make_paragraph(template_p, _check_inline_text(line, "cell text"))
+                    self._new_id(p)
+                    if header:
+                        for run in p.findall(W.r):
+                            apply_props(run, {"bold": True})
+                    tc.append(p)
+                tr.append(tc)
+            tbl.append(tr)
+        if op.position == "after":
+            target.addnext(tbl)
+        else:
+            target.addprevious(tbl)
+        # Word needs a paragraph between two tables and after a table that ends the body or
+        # a cell; add an empty one where it is missing.
+        nxt, prv = tbl.getnext(), tbl.getprevious()
+        if nxt is None or nxt.tag in (W.sectPr, W.tbl):
+            tbl.addnext(etree.Element(W.p, nsmap=_W_NSMAP))
+        if prv is not None and prv.tag == W.tbl:
+            tbl.addprevious(etree.Element(W.p, nsmap=_W_NSMAP))
+        self.result.inserted += 1
+        self._record(idx, "insert_table", f"{op.target_id} ({op.position})", None,
+                     f"table {len(op.rows)}x{len(widths)}: "
+                     + " / ".join(" | ".join(r) for r in op.rows[:5])
+                     + (" / …" if len(op.rows) > 5 else ""))
 
     def _delete_table(self, idx: int, op: DeleteTable) -> None:
         block = self._block(op.table_id, ("table",))

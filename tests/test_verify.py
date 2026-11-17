@@ -188,3 +188,28 @@ def test_detects_colour_change_outside_the_match(api_edited):
         c.set(W.val, "7030A0")
     assert "Untouched blocks are XML-identical" in failing(
         verify_edit(before, after.to_bytes(), ROW_PLAN))
+
+
+def test_detects_new_table_with_wrong_grid(api_reference_bytes):
+    from docx_agent.document.ns import qn
+    before = DocxPackage(api_reference_bytes)
+    p = plan({"op": "insert_table", "target_id": "p14", "position": "after",
+              "rows": [["a", "b"], ["c", "d"]], "format_like": "p14"})
+    work = before.copy()
+    apply_plan(work, p)
+    assert verify_edit(before, work.to_bytes(), p).passed
+    new_tbl = build_index(work).get("t1").element
+    new_tbl.find(qn("w:tblGrid"))[0].set(qn("w:w"), "1")
+    assert "New paragraphs and rows copy their template's formatting" in failing(
+        verify_edit(before, work.to_bytes(), p))
+
+
+def test_detects_table_created_without_plan(api_reference_bytes):
+    import copy as _copy
+    before = DocxPackage(api_reference_bytes)
+    p = plan({"op": "replace_text", "block_id": "p0", "find": "SDK", "replace_with": "Kit"})
+    work = before.copy()
+    apply_plan(work, p)
+    tbl = build_index(work).get("t0").element
+    tbl.addnext(_copy.deepcopy(tbl))
+    assert "Block structure matches the plan" in failing(verify_edit(before, work.to_bytes(), p))

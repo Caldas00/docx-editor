@@ -33,6 +33,7 @@ from .ops import (
     EditPlan,
     FormatText,
     InsertParagraph,
+    InsertTable,
     InsertTableRow,
     InsertText,
     ReplaceText,
@@ -104,6 +105,7 @@ class Expected:
     modified: bool = False
     template: etree._Element | None = None  # for new p / tr / tc: what it copies
     pieces: list[Piece] = field(default_factory=list)  # original piece of each char
+    spec: dict = field(default_factory=dict)  # for parts of a new table (see insert_table)
 
     @property
     def text(self) -> str:
@@ -120,6 +122,7 @@ class Oracle:
         ids = {b.element: b for b in index.blocks}
         self.entries: list[Expected] = []
         self.removed: list[etree._Element] = []  # original elements the plan deletes
+        self.added_tables = 0
         self._pid = {b.element: b.id for b in index.blocks if b.kind == "paragraph"}
         table_ids: dict[etree._Element, str] = {}
         row_numbers: dict[etree._Element, int] = {}
@@ -204,6 +207,8 @@ class Oracle:
         for e in entries:
             if e.kind == "p" and e.block_id:
                 self.deleted.add(e.block_id)
+            if e.kind == "tbl" and e.before is None:  # a table this plan created
+                self.added_tables -= 1
 
     # ---------------------------------------------------------------- replay
     def run(self, plan: EditPlan) -> list[Expected]:
@@ -322,6 +327,38 @@ class Oracle:
         i, j = self._span(anchor)
         at = j if op.position == "after" else i
         self.entries[at:at] = new
+
+    def _op_insert_table(self, op: InsertTable) -> None:
+        target = self._entry(op.target_id, ("p", "tbl"))
+        template_p = self._entry(op.format_like).element
+        template_t = self._entry(op.table_like, ("tbl",)).element if op.table_like else None
+        if target.kind == "tbl":
+            i, j = self._span(target)
+            at = j if op.position == "after" else i
+        else:
+            at = self.entries.index(target) + (1 if op.position == "after" else 0)
+        table = Expected("tbl", None, template=template_t, spec={"ncols": len(op.rows[0])})
+        new = [table]
+        for r, row in enumerate(op.rows):
+            header = op.header and r == 0
+            new.append(Expected("tr", None, spec={"header": header, "table": table}))
+            for c, text in enumerate(row):
+                new.append(Expected("tc", None, spec={"table": table, "col": c}))
+                for line in text.replace("\r\n", "\n").split("\n"):
+                    forced = {"bold": True} if header else {}
+                    chars = [OChar(ch, None, dict(forced)) for ch in line]
+                    new.append(Expected("p", None, None, True, chars, True, template_p))
+        new.append(Expected("tbl_end", None))
+        # an empty paragraph keeps tables apart and ends a body/cell (as the editor does)
+        nxt = self.entries[at] if at < len(self.entries) else None
+        prv = self.entries[at - 1] if at > 0 else None
+        spacer = lambda: Expected("p", None, None, True, [], True, None, spec={"spacer": True})  # noqa: E731
+        if nxt is None or nxt.kind in ("sectPr", "tbl", "tr", "tc", "tbl_end"):
+            new.append(spacer())
+        if prv is not None and prv.kind == "tbl_end":
+            new.insert(0, spacer())
+        self.entries[at:at] = new
+        self.added_tables += 1
 
     def _op_delete_table(self, op: DeleteTable) -> None:
         table = self._entry(op.table_id, ("tbl",))

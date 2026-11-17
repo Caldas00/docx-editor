@@ -27,12 +27,14 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from docx_agent.agent.llm import make_llm  # noqa: E402
 from docx_agent.config import Settings  # noqa: E402
+from docx_agent.conversation import format_history  # noqa: E402
 from docx_agent.document import DocxPackage  # noqa: E402
 from docx_agent.document.model import (  # noqa: E402
     build_index,
     paragraph_style,
     paragraph_view,
     run_flags,
+    run_props,
 )
 from docx_agent.document.ns import W  # noqa: E402
 from docx_agent.pricing import estimate_cost  # noqa: E402
@@ -100,6 +102,21 @@ def check(expect: dict, outcome, src: Path, out: Path) -> list[str]:
     for c in expect.get("colors_present", []):
         if c.upper() not in colors:
             errors.append(f"colour #{c} not applied")
+    for needle, color in expect.get("color_of", []):
+        hit = False
+        for _, _, el in after:
+            view = paragraph_view(el)
+            pos = view.text.find(needle)
+            if pos < 0:
+                continue
+            hit = True
+            got = {run_props(pc.run)["color"] for pc in view.pieces_in(pos, pos + len(needle))
+                   if pc.kind == "text" and pc.text.strip()}
+            if got != {color.upper()}:
+                errors.append(f"{needle!r} has colour {sorted(c or 'none' for c in got)}, "
+                              f"wanted #{color}")
+        if not hit:
+            errors.append(f"missing {needle!r}")
     if "images" in expect:
         n = sum(1 for _ in pkg.body.iter(W.drawing))
         if n != expect["images"]:
@@ -139,27 +156,49 @@ class Result:
 
 
 def run_case(case: dict, model: str) -> Result:
+    """Run one case. ``followups`` are later chat messages: each starts a new run on the
+    latest version with the conversation so far, exactly like the web UI."""
     settings = Settings(model=model, **case.get("settings", {}))
     service = EditService(make_llm(settings), settings)
-    src = SAMPLES / case["doc"]
+    current = SAMPLES / case["doc"]
+    steps = [{"instruction": case["instruction"], "selection": case.get("selection"),
+              "expect": case["expect"]}] + case.get("followups", [])
+    turns: list[dict] = []
+    usage = {"input": 0, "output": 0, "cached": 0}
+    calls = 0
+    errors: list[str] = []
+    outcome = None
     with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "out.docx"
         t0 = time.perf_counter()
         try:
-            outcome = service.start(src, case["instruction"], out,
-                                    selection=case.get("selection"))
-            calls = outcome.llm_calls
-            errors = check(case["expect"], outcome, src, out)
-            if not errors and "answer" in case:
-                outcome = service.resume(outcome.thread_id, case["answer"])
-                calls = outcome.llm_calls
-                errors = check(case["expect_after"], outcome, src, out)
+            for n, step in enumerate(steps):
+                out = Path(tmp) / f"out{n}.docx"
+                outcome = service.start(current, step["instruction"], out,
+                                        selection=step.get("selection"),
+                                        history=format_history(turns))
+                calls += outcome.llm_calls
+                for k in usage:
+                    usage[k] += (outcome.usage or {}).get(k, 0)
+                errors = [f"step {n + 1}: {e}" if len(steps) > 1 else e
+                          for e in check(step["expect"], outcome, SAMPLES / case["doc"], out)]
+                if errors:
+                    break
+                if n == 0 and "answer" in case:  # LangGraph interrupt/resume path (CLI)
+                    outcome = service.resume(outcome.thread_id, case["answer"])
+                    calls += outcome.llm_calls
+                    errors = check(case["expect_after"], outcome, SAMPLES / case["doc"], out)
+                    if errors:
+                        break
+                turns.append({"instruction": step["instruction"],
+                              "selection": step.get("selection"), **outcome.to_dict()})
+                if outcome.status == "done":
+                    current = out
         except Exception as exc:  # noqa: BLE001 - an eval run must report, not crash
-            return Result(case["id"], model, False, time.perf_counter() - t0, 0,
+            return Result(case["id"], model, False, time.perf_counter() - t0, calls,
                           [f"exception: {exc!r}"])
-        u = outcome.usage or {}
         return Result(case["id"], model, not errors, time.perf_counter() - t0, calls, errors,
-                      outcome.message, u.get("input", 0), u.get("output", 0), u.get("cached", 0))
+                      outcome.message if outcome else "", usage["input"], usage["output"],
+                      usage["cached"])
 
 
 def main() -> int:

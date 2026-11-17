@@ -53,14 +53,15 @@ class EditService:
 
     def start(self, input_path: str | Path, instruction: str, output_path: str | Path,
               thread_id: str | None = None,
-              selection: dict[str, Any] | None = None) -> EditOutcome:
+              selection: dict[str, Any] | None = None,
+              history: str | None = None) -> EditOutcome:
         thread_id = thread_id or uuid.uuid4().hex
         instruction = instruction.strip()
         if not instruction:
             return EditOutcome(thread_id, "failed", "The instruction is empty.")
         return self._run(thread_id, {"instruction": instruction, "input_path": str(input_path),
                                      "output_path": str(output_path),
-                                     "selection": selection})
+                                     "selection": selection, "history": history})
 
     def resume(self, thread_id: str, answer: str) -> EditOutcome:
         return self._run(thread_id, Command(resume=answer))
@@ -82,6 +83,11 @@ class EditService:
         if outcome.status != "needs_clarification":
             self._forget(thread_id)  # finished runs need no checkpoints
         return outcome
+
+    def forget(self, thread_id: str) -> None:
+        """Drop an interrupted run that will not be resumed (e.g. the web UI answers
+        questions with a new message instead)."""
+        self._forget(thread_id)
 
     def _forget(self, thread_id: str) -> None:
         checkpointer = self.agent.graph.checkpointer

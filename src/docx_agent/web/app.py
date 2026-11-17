@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
+from ..conversation import format_history
 from ..document import DocxError, DocxPackage, EditPlan
 from ..document.render import render_preview, render_redline
 from ..pricing import estimate_cost
@@ -32,7 +33,9 @@ from ..service import EditOutcome, EditService
 STATIC = Path(__file__).parent / "static"
 ROOT = Path(__file__).resolve().parents[3]
 SAMPLES_DIR = Path(os.getenv("DOCX_AGENT_SAMPLES", ROOT / "samples" / "input"))
-RUNS_DIR = Path(os.getenv("DOCX_AGENT_RUNS", ROOT / ".runs" / "web"))
+# Sessions live in memory, so each server process gets its own folder and only ever
+# cleans up that folder (several servers can run side by side).
+RUNS_DIR = Path(os.getenv("DOCX_AGENT_RUNS", ROOT / ".runs" / "web")) / f"server-{uuid.uuid4().hex[:8]}"
 MAX_UPLOAD = 20 * 1024 * 1024
 
 SAMPLE_INFO: dict[str, dict[str, Any]] = {
@@ -91,7 +94,6 @@ class DocSession:
     dir: Path
     versions: list[Version] = field(default_factory=list)
     turns: list[dict[str, Any]] = field(default_factory=list)  # the chat, oldest first
-    pending: dict[str, Any] | None = None  # interrupted run awaiting an answer
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
@@ -107,10 +109,6 @@ class Selection(BaseModel):
 class EditRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=2000)
     selection: Selection | None = None
-
-
-class AnswerRequest(BaseModel):
-    answer: str = Field(min_length=1, max_length=1000)
 
 
 class SampleRequest(BaseModel):
@@ -189,7 +187,6 @@ def _state(s: DocSession, view_version: int | None = None) -> dict[str, Any]:
         "turn": version.turn,
         "turns": s.turns,
         "suggestions": sample["suggestions"] if sample else GENERIC_SUGGESTIONS,
-        "pending": bool(s.pending),
     }
 
 
@@ -204,21 +201,20 @@ def _outcome_fields(outcome: EditOutcome) -> dict[str, Any]:
 def _record(s: DocSession, turn: dict[str, Any], outcome: EditOutcome, seconds: float,
             out_path: Path) -> dict[str, Any]:
     """Store an outcome in its conversation turn (and a new version when applied)."""
-    turn["seconds"] = round(turn.get("seconds", 0.0) + seconds, 1)
+    turn["seconds"] = round(seconds, 1)
     turn.update({k: v for k, v in _outcome_fields(outcome).items() if k != "thread_id"})
     if outcome.status == "needs_clarification":
-        s.pending = {"thread_id": outcome.thread_id, "turn": turn["index"],
-                     "out_path": str(out_path)}
+        # The answer arrives as the next chat message, which starts a new run that sees
+        # the question in the conversation, so this interrupted run is not resumed.
+        get_service().forget(outcome.thread_id)
+    if outcome.status == "done":
+        before = DocxPackage(s.current.path.read_bytes())
+        after = DocxPackage(out_path.read_bytes())
+        redline = render_redline(before, after, EditPlan.model_validate(outcome.plan))
+        s.versions.append(Version(out_path, turn["index"], redline))
+        turn["version"] = len(s.versions) - 1
     else:
-        s.pending = None
-        if outcome.status == "done":
-            before = DocxPackage(s.current.path.read_bytes())
-            after = DocxPackage(out_path.read_bytes())
-            redline = render_redline(before, after, EditPlan.model_validate(outcome.plan))
-            s.versions.append(Version(out_path, turn["index"], redline))
-            turn["version"] = len(s.versions) - 1
-        else:
-            out_path.unlink(missing_ok=True)
+        out_path.unlink(missing_ok=True)
     return {"turn": turn, "session": _state(s)}
 
 
@@ -269,38 +265,16 @@ def edit(sid: str, req: EditRequest) -> dict[str, Any]:
     if not s.lock.acquire(blocking=False):
         raise HTTPException(409, "An edit is already running for this document.")
     try:
-        if s.pending:  # a new instruction abandons an unanswered question
-            s.turns[s.pending["turn"]]["status"] = "abandoned"
-            s.pending = None
-        turn = {"index": len(s.turns), "instruction": req.instruction,
-                "selection": req.selection.model_dump() if req.selection else None,
-                "answers": [], "status": "running", "version": None}
+        selection = req.selection.model_dump() if req.selection else None
+        history = format_history(s.turns)  # earlier turns: the conversation memory
+        turn = {"index": len(s.turns), "instruction": req.instruction, "selection": selection,
+                "status": "running", "version": None}
         s.turns.append(turn)
         out_path = s.dir / f"v{len(s.versions)}-{uuid.uuid4().hex[:6]}.docx"
         started = time.perf_counter()
-        outcome = get_service().start(
-            s.current.path, req.instruction, out_path,
-            selection=req.selection.model_dump() if req.selection else None)
+        outcome = get_service().start(s.current.path, req.instruction, out_path,
+                                      selection=selection, history=history)
         return _record(s, turn, outcome, time.perf_counter() - started, out_path)
-    finally:
-        s.lock.release()
-
-
-@app.post("/api/sessions/{sid}/answer")
-def answer(sid: str, req: AnswerRequest) -> dict[str, Any]:
-    s = _session(sid)
-    if not s.pending:
-        raise HTTPException(409, "No question is pending.")
-    if not s.lock.acquire(blocking=False):
-        raise HTTPException(409, "An edit is already running for this document.")
-    try:
-        pending = s.pending
-        turn = s.turns[pending["turn"]]
-        turn["answers"].append({"question": turn.get("question"), "answer": req.answer})
-        started = time.perf_counter()
-        outcome = get_service().resume(pending["thread_id"], req.answer)
-        return _record(s, turn, outcome, time.perf_counter() - started,
-                       Path(pending["out_path"]))
     finally:
         s.lock.release()
 
@@ -313,7 +287,6 @@ def undo(sid: str) -> dict[str, Any]:
     version = s.versions.pop()
     if version.turn is not None:
         s.turns[version.turn]["undone"] = True
-    s.pending = None
     return _state(s)
 
 

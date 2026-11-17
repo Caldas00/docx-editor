@@ -526,3 +526,54 @@ def test_delete_table_and_reference_after_it():
 def test_row_id_used_as_paragraph_gets_a_hint():
     with pytest.raises(EditError, match="is a table row"):
         run_plan(pkg_of(TBL), {"op": "delete_paragraph", "block_id": "t0.r1"})
+
+
+# --------------------------------------------------------------- new tables
+def new_table(target="p0", position="after", rows=(("1",), ("2",)), **kw):
+    return {"op": "insert_table", "target_id": target, "position": position,
+            "rows": [list(r) for r in rows], "format_like": kw.pop("format_like", "p0"), **kw}
+
+
+def test_insert_table_with_header_and_grid():
+    pkg = pkg_of(P(R("intro")) + P(R("outro")))
+    out, report = run_plan(pkg, new_table(rows=(("N", "Square"), ("1", "1"), ("2", "4")),
+                                          header=True))
+    t = texts(out)
+    assert t["t0.r0.c0.p0"] == "N" and t["t0.r2.c1.p0"] == "4"
+    assert list(t)[-1] == "p1" and t["p1"] == "outro"
+    xml = block_xml(out, "t0.r0.c0.p0")
+    assert "<w:b/>" in xml
+    tbl = build_index(out).get("t0").element
+    from docx_agent.document.ns import qn
+    assert len(list(tbl.iter(qn("w:tblHeader")))) == 1
+    assert len(list(tbl.iter(qn("w:gridCol")))) == 2
+    assert report.passed
+
+
+def test_insert_table_at_end_of_body_gets_a_closing_paragraph():
+    pkg = pkg_of(P(R("only")))
+    out, _ = run_plan(pkg, new_table())
+    assert list(texts(out)) == ["p0", "t0.r0.c0.p0", "t0.r1.c0.p0", "p1"]
+    assert texts(out)["p1"] == ""
+
+
+def test_insert_table_next_to_a_table_keeps_them_apart():
+    pkg = pkg_of(P(R("a")) + table([["x", "y"], ["1", "2"]]) + P(R("b")))
+    out, _ = run_plan(pkg, new_table(target="t0", rows=(("new", "row"),), table_like="t0"))
+    ids = list(texts(out))
+    assert ids.index("p1") < ids.index("t1.r0.c0.p0")  # spacer paragraph between the tables
+    assert texts(out)["p1"] == ""
+
+
+def test_insert_table_rows_must_be_rectangular():
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError, match="same number of cells"):
+        run_plan(pkg_of(P(R("a"))), new_table(rows=(("1", "2"), ("3",))))
+
+
+def test_table_inside_a_cell():
+    pkg = pkg_of("<w:tbl><w:tr><w:tc>" + P(R("cell")) + "</w:tc></w:tr></w:tbl>" + P(R("x")))
+    out, _ = run_plan(pkg, new_table(target="t0.r0.c0.p0", format_like="t0.r0.c0.p0"))
+    t = texts(out)
+    assert t["t0.r0.c0.t0.r1.c0.p0"] == "2" and t["t0.r0.c0.p1"] == ""
