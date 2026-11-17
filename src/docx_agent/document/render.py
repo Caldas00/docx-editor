@@ -55,9 +55,9 @@ def _run_css(run: etree._Element | None) -> tuple[list[str], list[str]]:
         css.append("text-decoration:underline")
     if _on(rpr.find(W.strike)):
         css.append("text-decoration:line-through")
-    color = rpr.find(W.color)
-    if color is not None and color.get(W.val) not in (None, "auto"):
-        css.append(f"color:#{color.get(W.val)}")
+    color = _hex(rpr.find(W.color), W.val)
+    if color:
+        css.append(f"color:#{color}")
     hl = rpr.find(W.highlight)
     if hl is not None and hl.get(W.val) not in (None, "none"):
         css.append(f"background:{_HIGHLIGHT.get(hl.get(W.val), '#fff59d')}")
@@ -65,6 +65,18 @@ def _run_css(run: etree._Element | None) -> tuple[list[str], list[str]]:
     if sz is not None and (sz.get(W.val) or "").isdigit():
         css.append(f"font-size:{int(sz.get(W.val)) / 2:.1f}pt")
     return css, tags
+
+
+_HEX = re.compile(r"[0-9A-Fa-f]{6}")
+
+
+def _hex(el: etree._Element | None, attr: str) -> str | None:
+    """A colour attribute, only if it is a plain RRGGBB value (document content is
+    untrusted: never copy raw attribute text into HTML)."""
+    if el is None:
+        return None
+    val = el.get(attr) or ""
+    return val if _HEX.fullmatch(val) else None
 
 
 _HIGHLIGHT = {"yellow": "#fff59d", "green": "#c8f7c5", "cyan": "#b2f5ff", "magenta": "#f8c4f5",
@@ -200,9 +212,9 @@ class Renderer:
             vm = tcpr.find(W.vMerge)
             if vm is not None and vm.get(W.val) in (None, "continue"):
                 hidden = True
-            shd = tcpr.find(qn("w:shd"))
-            if shd is not None and shd.get(qn("w:fill")) not in (None, "auto"):
-                attrs += f' style="background:#{shd.get(qn("w:fill"))}"'
+            fill = _hex(tcpr.find(qn("w:shd")), qn("w:fill"))
+            if fill:
+                attrs += f' style="background:#{fill}"'
         return attrs, hidden
 
 
@@ -352,30 +364,30 @@ def _tidy(chars: list[_Char]) -> list[_Char]:
 
 
 def _place_deleted(after, before, expected, actual, deleted_ids, r_before, para_html) -> None:
+    """Show each deleted paragraph (struck through) next to its nearest surviving
+    sibling paragraph in the *same container* (body or table cell)."""
     from .model import build_index
 
     b_index = build_index(before)
-    # map before element -> after element for surviving original paragraphs
-    surv: list[tuple[etree._Element, etree._Element]] = [
-        (e.before.element, a.element) for e, a in zip(expected, actual)
-        if e.kind == "p" and e.before is not None
-    ]
-    order = [b.element for b in b_index.paragraphs()]
-    pos = {id(el): i for i, el in enumerate(order)}
-    for bid in deleted_ids:
-        blk = b_index.get(bid)
-        if blk is None:
-            continue
+    survivors = {e.before.element: a.element for e, a in zip(expected, actual)
+                 if e.kind == "p" and e.before is not None}
+    r_after = Renderer(after)
+    order = {id(b.element): i for i, b in enumerate(b_index.blocks)}
+    blocks = sorted((b for b in (b_index.get(bid) for bid in deleted_ids) if b is not None),
+                    key=lambda b: order[id(b.element)])
+    for blk in blocks:
         html_del = r_before.paragraph(blk.element, chars=_all(blk.element, "del"),
                                       extra_cls="block-del")
-        idx = pos[id(blk.element)]
-        prev = [a for b, a in surv if pos.get(id(b), -1) < idx]
-        anchor = prev[-1] if prev else (surv[0][1] if surv else None)
-        if anchor is None:
+        prev = blk.element.getprevious()
+        while prev is not None and prev not in survivors:
+            prev = prev.getprevious()
+        if prev is not None:
+            key = id(survivors[prev])
+            para_html[key] = (para_html.get(key) or r_after.paragraph(survivors[prev])) + html_del
             continue
-        key = id(anchor)
-        if prev:
-            # attach after the previous surviving paragraph's html
-            para_html[key] = (para_html.get(key) or Renderer(after).paragraph(anchor)) + html_del
-        else:
-            para_html[key] = html_del + (para_html.get(key) or Renderer(after).paragraph(anchor))
+        nxt = blk.element.getnext()
+        while nxt is not None and nxt not in survivors:
+            nxt = nxt.getnext()
+        if nxt is not None:
+            key = id(survivors[nxt])
+            para_html[key] = html_del + (para_html.get(key) or r_after.paragraph(survivors[nxt]))

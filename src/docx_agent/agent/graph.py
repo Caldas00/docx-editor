@@ -56,9 +56,6 @@ class AgentState(TypedDict, total=False):
     output_path: str
     # working data
     doc_name: str
-    outline: str
-    outline_truncated: bool
-    n_blocks: int
     messages: Annotated[list[AnyMessage], add_messages]
     steps: int
     attempts: int
@@ -79,6 +76,13 @@ def _format_validation_error(exc: ValidationError) -> str:
     return "Invalid plan arguments - " + "; ".join(parts)
 
 
+def _not_executed(call: dict[str, Any]) -> ToolMessage:
+    """Every tool call must get a reply, even the ones we do not run (the API rejects a
+    history with unanswered tool calls)."""
+    return ToolMessage(content="Not executed: only one action per turn is processed.",
+                       tool_call_id=call["id"], status="error")
+
+
 class DocxEditAgent:
     """Builds and owns the compiled graph. ``llm`` is injected (real or fake)."""
 
@@ -92,16 +96,11 @@ class DocxEditAgent:
     # ------------------------------------------------------------------ nodes
     def load_document(self, state: AgentState) -> dict[str, Any]:
         try:
-            pkg = DocxPackage(Path(state["input_path"]).read_bytes())
+            DocxPackage(Path(state["input_path"]).read_bytes())  # fail fast on bad input
         except (OSError, DocxError) as exc:
             return {"status": "failed", "message": f"Could not open the document: {exc}"}
-        index = build_index(pkg)
-        outline, truncated = render_outline(pkg, index, self.settings.outline_chars)
         return {
             "doc_name": Path(state["input_path"]).name,
-            "outline": outline,
-            "outline_truncated": truncated,
-            "n_blocks": len(index.blocks),
             "messages": [HumanMessage(content=state["instruction"])],
             "steps": 0,
             "attempts": 0,
@@ -112,11 +111,15 @@ class DocxEditAgent:
         }
 
     def planner(self, state: AgentState) -> dict[str, Any]:
+        # The outline is rebuilt here rather than kept in state, so checkpoints stay small.
+        pkg = DocxPackage(Path(state["input_path"]).read_bytes())
+        index = build_index(pkg)
+        outline, truncated = render_outline(pkg, index, self.settings.outline_chars)
         system = SystemMessage(content=SYSTEM_PROMPT.format(
             doc_name=state["doc_name"],
-            n_blocks=state["n_blocks"],
-            truncated=' truncated="true"' if state.get("outline_truncated") else "",
-            outline=state["outline"],
+            n_blocks=len(index.blocks),
+            truncated=' truncated="true"' if truncated else "",
+            outline=outline,
         ))
         ai = self.llm.invoke([system, *state["messages"]])
         return {"messages": [ai], "steps": state.get("steps", 0) + 1}
@@ -126,6 +129,9 @@ class DocxEditAgent:
         pkg = DocxPackage(Path(state["input_path"]).read_bytes())
         out = []
         for call in ai.tool_calls:
+            if call["name"] not in READ_ONLY_TOOLS:
+                out.append(_not_executed(call))
+                continue
             try:
                 result = run_read_only_tool(pkg, call["name"], call["args"])
             except (ValidationError, ValueError) as exc:
@@ -141,10 +147,12 @@ class DocxEditAgent:
         call = ai.tool_calls[0]
         attempts = state.get("attempts", 0) + 1
 
+        extra = [_not_executed(c) for c in ai.tool_calls[1:]]
+
         def reject(msg: str) -> dict[str, Any]:
-            return {"messages": [ToolMessage(content=f"ERROR: {msg}\nNothing was changed. "
-                                             "Submit a corrected plan.",
-                                             tool_call_id=call["id"], status="error")],
+            return {"messages": [*extra, ToolMessage(content=f"ERROR: {msg}\nNothing was "
+                                                     "changed. Submit a corrected plan.",
+                                                     tool_call_id=call["id"], status="error")],
                     "attempts": attempts}
 
         try:
@@ -165,7 +173,7 @@ class DocxEditAgent:
             for c in result.changes
         ]
         return {
-            "messages": [ToolMessage(content=f"Applied {len(plan.operations)} operation(s); "
+            "messages": [*extra, ToolMessage(content=f"Applied {len(plan.operations)} operation(s); "
                                      "running integrity verification.", tool_call_id=call["id"])],
             "attempts": attempts,
             "plan": plan.model_dump(mode="json"),
@@ -197,7 +205,8 @@ class DocxEditAgent:
         except ValidationError:
             payload = {"question": str(call["args"]), "options": []}
         answer = interrupt(payload)
-        return {"messages": [ToolMessage(content=f"The user answered: {answer}",
+        return {"messages": [*(_not_executed(c) for c in ai.tool_calls[1:]),
+                             ToolMessage(content=f"The user answered: {answer}",
                                          tool_call_id=call["id"])]}
 
     def decline(self, state: AgentState) -> dict[str, Any]:

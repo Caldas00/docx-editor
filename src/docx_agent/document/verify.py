@@ -358,8 +358,15 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
             break
     if before.body.find(W.sectPr) is not None and (len(after.body) == 0 or after.body[-1].tag != W.sectPr):
         sane.append("body no longer ends with its section properties")
+    if _last_block_tag(before.body) == W.p and _last_block_tag(after.body) != W.p:
+        sane.append("the document no longer ends with a paragraph")
     report.add("OOXML structure rules hold", not sane, "; ".join(sane))
     return report
+
+
+def _last_block_tag(body: etree._Element) -> str | None:
+    blocks = [c for c in body if c.tag in (W.p, W.tbl)]
+    return blocks[-1].tag if blocks else None
 
 
 def expected_document_templates(pkg: DocxPackage) -> list[Expected]:

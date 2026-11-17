@@ -43,7 +43,7 @@ uv run docx-agent apply samples/input/session_note.docx \
 **Tests and evals**
 
 ```bash
-uv run pytest                    # 96 offline tests (no network, about 10 s)
+uv run pytest                    # 107 offline tests (no network, about 12 s)
 uv run pytest -m llm             # end-to-end tests against the real API
 uv run python evals/run.py       # behavioural evals against the real API (22 cases)
 ```
@@ -186,7 +186,7 @@ Python strings and tracks the origin of every character.
 9. OOXML structure rules hold: every table cell ends with a paragraph, and the body ends with
    its `sectPr`.
 
-**2. Offline test suite (96 tests, about 10 s, no network)**
+**2. Offline test suite (107 tests, about 12 s, no network)**
 
 - **Engine unit tests** (`test_ops.py`) cover each operation and each refusal. They use
   synthetic XML with split runs, hyperlinks, fields, tracked changes, content controls,
@@ -205,6 +205,10 @@ Python strings and tracks the origin of every character.
 - **Web API tests** (`test_web.py`), **package tests** (round-trip losslessness, XXE, malformed
   input), and **replay tests** that rebuild the committed sample outputs from their plans and
   check them byte-for-byte.
+- **Regression tests** (`test_regressions.py`) cover the issues found in code review: HTML
+  injection through document attributes, LLM/API errors, several tool calls in one message,
+  formatting a range that ends on a tab, custom XML blocks, the paragraph after a final table,
+  the cost of near-miss suggestions, and where deleted cell paragraphs appear in the redline.
 
 **3. Behavioural evals against the real model (`evals/`)**
 
@@ -216,7 +220,7 @@ does not exist, a Portuguese instruction, a truncated outline (which forces the 
 and **a prompt injection inside the document**. Each case checks the outcome: required and
 forbidden text, the styles of new paragraphs, bold or italic, how many paragraphs changed (to
 catch over-editing), no new double spaces, and that verification passed. Results are in
-[`evals/results/latest.md`](evals/results/latest.md).
+[`evals/results/latest.md`](evals/results/latest.md) (latest run of the default model); the model comparison below is in [`evals/results/model-comparison.md`](evals/results/model-comparison.md).
 
 | model | pass rate (22 cases × 3 runs) | median latency | failures |
 |---|---|---|---|

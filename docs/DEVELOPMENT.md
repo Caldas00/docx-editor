@@ -37,6 +37,13 @@ architecture discussion  →  vertical slice  →  verification harness  →  ev
    - The edited `.docx` files were opened in **Microsoft Word** through AppleScript to make
      sure no "repair" prompt appeared, and exported to PDF for a visual check.
 
+6. **Code review pass.** A structured review of the whole package (`/code-review`) found 10
+   issues. Among them were an HTML injection through untrusted colour attributes in the
+   preview, unanswered parallel tool calls, LLM errors surfacing as raw 500s, and a
+   `format_text` edge case at tab boundaries. Each one got a regression test
+   (`tests/test_regressions.py`) and a fix, and the full eval suite was re-run afterwards
+   (gpt-5.5: 66/66).
+
 ## 2. How AI-generated code is verified
 
 The core idea is to make correctness **checkable by a machine**, so that "the agent says it

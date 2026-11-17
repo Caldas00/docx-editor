@@ -214,10 +214,20 @@ def _suggest(texts: list[tuple[str, str]], needle: str) -> str:
             return f" The text exists in {bid} but with different whitespace: copy it exactly."
     best: tuple[float, str, str] | None = None
     n = len(needle)
+    budget = 200_000  # characters scanned at most: this runs on every failed anchor
+    matcher = difflib.SequenceMatcher(autojunk=False)
+    matcher.set_seq2(needle)
     for bid, text in texts:
-        for start in range(0, max(1, len(text) - n + 1)):
+        if budget <= 0:
+            break
+        budget -= len(text)
+        # candidate windows start at word boundaries only
+        for start in (m.start() for m in re.finditer(r"(?<!\w)\w|^", text)):
             cand = text[start:start + n]
-            r = difflib.SequenceMatcher(None, needle, cand).ratio()
+            matcher.set_seq1(cand)
+            if matcher.real_quick_ratio() <= 0.8 or matcher.quick_ratio() <= 0.8:
+                continue
+            r = matcher.ratio()
             if r > 0.8 and (best is None or r > best[0]):
                 best = (r, bid, cand)
     if best:
@@ -305,8 +315,9 @@ def _split_run_at(piece: Piece, offset: int) -> None:
     """Split ``piece.run`` so that a run boundary falls at ``offset`` (absolute,
     within the paragraph view). No-op if a boundary already exists there."""
     run = piece.run
-    assert run is not None and piece.kind == "text"
+    assert run is not None
     k = offset - piece.start
+    assert piece.kind == "text" or k in (0, len(piece.text)), "can only split inside text"
     t = piece.node
     content = [c for c in run if c.tag != W.rPr]
     idx = content.index(t)
@@ -718,6 +729,11 @@ class DocumentEditor:
             raise EditError(
                 f"{op.block_id} separates two tables; deleting it would merge them."
             )
+        if prev is not None and prev.tag == W.tbl and (nxt is None or nxt.tag == W.sectPr):
+            raise EditError(
+                f"{op.block_id} is the paragraph that must follow the final table; it cannot "
+                "be deleted (use delete_text to clear it)."
+            )
         before = view.text
         _remove(el)
         self._deleted[op.block_id] = idx
@@ -746,11 +762,11 @@ class DocumentEditor:
                     )
             # split at both boundaries (end first so start offsets stay valid)
             last = view.piece_at(end - 1)
-            if last is not None and last.kind == "text":
+            if last is not None and last.run is not None:
                 _split_run_at(last, end)
             view = paragraph_view(el)
             first = view.piece_at(start)
-            if first is not None and first.kind == "text":
+            if first is not None and first.run is not None:
                 _split_run_at(first, start)
             view = paragraph_view(el)
             runs: list[etree._Element] = []

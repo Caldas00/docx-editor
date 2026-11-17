@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -14,6 +15,8 @@ from langgraph.types import Command
 from .agent.graph import DocxEditAgent
 from .agent.llm import make_llm
 from .config import Settings, get_settings
+
+log = logging.getLogger(__name__)
 
 OutcomeStatus = Literal["done", "declined", "failed", "needs_clarification"]
 
@@ -53,16 +56,34 @@ class EditService:
         instruction = instruction.strip()
         if not instruction:
             return EditOutcome(thread_id, "failed", "The instruction is empty.")
-        self.agent.graph.invoke(
-            {"instruction": instruction, "input_path": str(input_path),
-             "output_path": str(output_path)},
-            self._config(thread_id),
-        )
-        return self._outcome(thread_id)
+        return self._run(thread_id, {"instruction": instruction, "input_path": str(input_path),
+                                     "output_path": str(output_path)})
 
     def resume(self, thread_id: str, answer: str) -> EditOutcome:
-        self.agent.graph.invoke(Command(resume=answer), self._config(thread_id))
-        return self._outcome(thread_id)
+        return self._run(thread_id, Command(resume=answer))
+
+    def _run(self, thread_id: str, graph_input: Any) -> EditOutcome:
+        try:
+            self.agent.graph.invoke(graph_input, self._config(thread_id))
+        except Exception as exc:  # noqa: BLE001 - LLM/API/network errors become an outcome
+            log.exception("edit run %s failed", thread_id)
+            values = self.agent.graph.get_state(self._config(thread_id)).values
+            cand = values.get("candidate_path")
+            if cand:
+                Path(cand).unlink(missing_ok=True)
+            self._forget(thread_id)
+            return EditOutcome(thread_id, "failed",
+                               f"The edit run failed ({type(exc).__name__}: "
+                               f"{str(exc)[:300]}). Nothing was changed.")
+        outcome = self._outcome(thread_id)
+        if outcome.status != "needs_clarification":
+            self._forget(thread_id)  # finished runs need no checkpoints
+        return outcome
+
+    def _forget(self, thread_id: str) -> None:
+        checkpointer = self.agent.graph.checkpointer
+        if checkpointer is not None and hasattr(checkpointer, "delete_thread"):
+            checkpointer.delete_thread(thread_id)
 
     def _outcome(self, thread_id: str) -> EditOutcome:
         snap = self.agent.graph.get_state(self._config(thread_id))

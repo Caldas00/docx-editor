@@ -268,7 +268,9 @@ def _walk_container(
             if content is not None:
                 _walk_container(content, prefix, out, depth, "inside a content control", counters)
         elif tag == W.customXml:
-            _walk_container(child, prefix, out, depth, readonly_reason, counters)
+            # The verifier treats block-level custom XML as one opaque unit, so the
+            # paragraphs inside are listed but not editable.
+            _walk_container(child, prefix, out, depth, "inside a custom XML element", counters)
 
 
 def build_index(pkg: DocxPackage) -> DocumentIndex:
