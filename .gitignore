@@ -1,0 +1,28 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Runtime output
+.runs/
+*.tmp.docx
+~$*.docx
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Case brief (not part of the submission)
+Olymp_Engineering_Case_Study.pdf
