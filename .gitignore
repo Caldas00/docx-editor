@@ -26,3 +26,6 @@ build/
 
 # Case brief (not part of the submission)
 Olymp_Engineering_Case_Study.pdf
+
+# Local tooling
+.claude/launch.json
