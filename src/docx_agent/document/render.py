@@ -11,14 +11,14 @@ import base64
 import html
 import mimetypes
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lxml import etree
 
-from .model import Piece, list_level, paragraph_style, paragraph_view
+from .model import Piece, build_index, list_level, paragraph_style, paragraph_view
 from .ns import R_EMBED, W, qn
 from .ops import EditPlan
-from .oracle import Expected, document_stream, expected_document
+from .oracle import Expected, document_stream, replay
 from .package import DocxPackage
 
 A_BLIP = qn("a:blip")
@@ -84,9 +84,12 @@ _HIGHLIGHT = {"yellow": "#fff59d", "green": "#c8f7c5", "cyan": "#b2f5ff", "magen
 
 
 class Renderer:
-    def __init__(self, pkg: DocxPackage) -> None:
+    def __init__(self, pkg: DocxPackage, with_ids: bool = True) -> None:
         self.pkg = pkg
         self._img_cache: dict[str, str] = {}
+        # block ids as data attributes, so the UI can tell the agent what the user selected
+        self.ids: dict[etree._Element, str] = (
+            {b.element: b.id for b in build_index(pkg).blocks} if with_ids else {})
 
     # ---------------------------------------------------------------- pieces
     def _image(self, node: etree._Element) -> str:
@@ -116,6 +119,8 @@ class Renderer:
             return '<span class="page-break" title="Page break"></span>'
         if piece.label == "IMAGE":
             return self._image(piece.node)
+        if piece.label == "SHAPE":
+            return '<span class="shape" title="Shape or text box (not editable)">shape</span>'
         if piece.label in ("FIELD", "TRACKED_CHANGE", "CONTENT_CONTROL"):
             cls = piece.label.lower().replace("_", "-")
             return f'<span class="{cls}" title="{piece.label.title()} (protected)">' \
@@ -190,7 +195,9 @@ class Renderer:
             style_attr = f' style="text-align:{align}"'
         if extra_cls:
             cls.append(extra_cls)
-        return f'<{tag} class="{" ".join(cls)}"{style_attr}>', f"</{tag}>"
+        bid = self.ids.get(p)
+        data = f' data-bid="{html.escape(bid)}"' if bid else ""
+        return f'<{tag} class="{" ".join(cls)}"{style_attr}{data}>', f"</{tag}>"
 
     def paragraph(self, p: etree._Element, chars: list[_Char] | None = None,
                   extra_cls: str = "") -> str:
@@ -218,64 +225,89 @@ class Renderer:
         return attrs, hidden
 
 
-def _table_html(r: Renderer, tbl: etree._Element, para_html: dict[int, str]) -> str:
+@dataclass
+class _Overlay:
+    """Redline decorations layered over the rendering of the edited document."""
+
+    para_html: dict[int, str] = field(default_factory=dict)  # id(after p) -> html
+    row_cls: dict[int, str] = field(default_factory=dict)  # id(after tr) -> css class
+    rows_after: dict[int, list[str]] = field(default_factory=dict)  # deleted rows
+    rows_before: dict[int, list[str]] = field(default_factory=dict)
+
+
+def _row_html(r: Renderer, tr: etree._Element, ov: _Overlay, row_id: str | None,
+              cls: str = "", deleted: bool = False) -> str:
+    cells = []
+    for tc in tr.findall(W.tc):
+        attrs, hidden = r._cell_attrs(tc)
+        if hidden:
+            continue
+        inner = []
+        for child in tc:
+            if child.tag == W.p:
+                if deleted:
+                    inner.append(r.paragraph(child, chars=_all(child, "del")))
+                else:
+                    inner.append(ov.para_html.get(id(child)) or r.paragraph(child))
+            elif child.tag == W.tbl:
+                inner.append(_table_html(r, child, ov, deleted=deleted))
+        cells.append(f"<td{attrs}>{''.join(inner)}</td>")
+    data = f' data-row="{html.escape(row_id)}"' if row_id and not deleted else ""
+    klass = f' class="{cls}"' if cls else ""
+    return f"<tr{klass}{data}>{''.join(cells)}</tr>"
+
+
+def _table_html(r: Renderer, tbl: etree._Element, ov: _Overlay, extra_cls: str = "",
+                deleted: bool = False) -> str:
+    tid = r.ids.get(tbl)
     rows = []
-    for tr in tbl.findall(W.tr):
-        cells = []
-        for tc in tr.findall(W.tc):
-            attrs, hidden = r._cell_attrs(tc)
-            if hidden:
-                continue
-            inner = []
-            for child in tc:
-                if child.tag == W.p:
-                    inner.append(para_html.get(id(child)) or r.paragraph(child))
-                elif child.tag == W.tbl:
-                    inner.append(_table_html(r, child, para_html))
-            cells.append(f"<td{attrs}>{''.join(inner)}</td>")
-        rows.append(f"<tr>{''.join(cells)}</tr>")
-    return f'<table class="doc-table">{"".join(rows)}</table>'
+    for i, tr in enumerate(tbl.findall(W.tr)):
+        rid = f"{tid}.r{i}" if tid else None
+        rows += ov.rows_before.get(id(tr), [])
+        rows.append(_row_html(r, tr, ov, rid, ov.row_cls.get(id(tr), ""), deleted))
+        rows += ov.rows_after.get(id(tr), [])
+    cls = "doc-table" + (f" {extra_cls}" if extra_cls else "")
+    data = f' data-bid="{html.escape(tid)}"' if tid and not deleted else ""
+    return f'<table class="{cls}"{data}>{"".join(rows)}</table>'
 
 
-def _body_html(r: Renderer, pkg: DocxPackage, para_html: dict[int, str]) -> str:
+def _body_html(r: Renderer, pkg: DocxPackage, ov: _Overlay) -> str:
     out: list[str] = []
     for child in pkg.body:
         if child.tag == W.p:
-            out.append(para_html.get(id(child)) or r.paragraph(child))
+            out.append(ov.para_html.get(id(child)) or r.paragraph(child))
         elif child.tag == W.tbl:
-            out.append(_table_html(r, child, para_html))
+            out.append(_table_html(r, child, ov))
     return "".join(out)
 
 
 def render_preview(pkg: DocxPackage) -> str:
-    r = Renderer(pkg)
-    return _body_html(r, pkg, {})
+    return _body_html(Renderer(pkg), pkg, _Overlay())
 
 
 def render_redline(before: DocxPackage, after: DocxPackage, plan: EditPlan) -> str:
     """Render ``after`` with insertions/deletions/formatting changes marked."""
-    expected, deleted_ids = expected_document(before, plan)
+    oracle = replay(before, plan)
+    expected = oracle.entries
     actual = document_stream(after)
-    r_after = Renderer(after)
-    r_before = Renderer(before)
-    para_html: dict[int, str] = {}
     if [e.kind for e in expected] != [a.kind for a in actual]:
         return render_preview(after)  # verification would have failed; show plain
-
+    r_after = Renderer(after)
+    r_before = Renderer(before, with_ids=False)
+    ov = _Overlay()
     for exp, act in zip(expected, actual):
+        if exp.kind == "tr" and exp.before is None:
+            ov.row_cls[id(act.element)] = "row-ins"
         if exp.kind != "p":
             continue
         if exp.before is None:
-            para_html[id(act.element)] = r_after.paragraph(act.element, extra_cls="block-ins",
-                                                           chars=_all(act.element, "ins"))
+            ov.para_html[id(act.element)] = r_after.paragraph(
+                act.element, extra_cls="block-ins", chars=_all(act.element, "ins"))
         elif exp.modified:
-            para_html[id(act.element)] = r_after.paragraph(
+            ov.para_html[id(act.element)] = r_after.paragraph(
                 act.element, chars=_merge(exp, exp.before.element, act.element))
-
-    # deleted paragraphs: show them (struck through) where they used to be
-    if deleted_ids:
-        _place_deleted(after, before, expected, actual, deleted_ids, r_before, para_html)
-    return _body_html(r_after, after, para_html)
+    _place_removed(oracle.removed, expected, actual, r_before, r_after, ov)
+    return _body_html(r_after, after, ov)
 
 
 def _all(p: etree._Element, status: str) -> list[_Char]:
@@ -363,31 +395,47 @@ def _tidy(chars: list[_Char]) -> list[_Char]:
     return out
 
 
-def _place_deleted(after, before, expected, actual, deleted_ids, r_before, para_html) -> None:
-    """Show each deleted paragraph (struck through) next to its nearest surviving
-    sibling paragraph in the *same container* (body or table cell)."""
-    from .model import build_index
-
-    b_index = build_index(before)
-    survivors = {e.before.element: a.element for e, a in zip(expected, actual)
-                 if e.kind == "p" and e.before is not None}
-    r_after = Renderer(after)
-    order = {id(b.element): i for i, b in enumerate(b_index.blocks)}
-    blocks = sorted((b for b in (b_index.get(bid) for bid in deleted_ids) if b is not None),
-                    key=lambda b: order[id(b.element)])
-    for blk in blocks:
-        html_del = r_before.paragraph(blk.element, chars=_all(blk.element, "del"),
-                                      extra_cls="block-del")
-        prev = blk.element.getprevious()
-        while prev is not None and prev not in survivors:
-            prev = prev.getprevious()
-        if prev is not None:
-            key = id(survivors[prev])
-            para_html[key] = (para_html.get(key) or r_after.paragraph(survivors[prev])) + html_del
+def _place_removed(removed, expected, actual, r_before: Renderer, r_after: Renderer,
+                   ov: _Overlay) -> None:
+    """Show deleted paragraphs, rows and tables (struck through) next to their nearest
+    surviving sibling in the same container. Deleted pictures are shown inline."""
+    para_map = {e.before.element: a.element for e, a in zip(expected, actual)
+                if e.kind == "p" and e.before is not None}
+    row_map = {e.before.element: a.element for e, a in zip(expected, actual)
+               if e.kind == "tr" and e.before is not None}
+    order = {id(item.element): i for i, item in enumerate(document_stream(r_before.pkg))}
+    for el in sorted((x for x in removed if x.tag in (W.p, W.tr, W.tbl)),
+                     key=lambda x: order.get(id(x), 0)):
+        if el.tag == W.tr:
+            html_del = _row_html(r_before, el, _Overlay(), None, "row-del", deleted=True)
+            prev = _nearest(el, row_map, "previous")
+            if prev is not None:
+                ov.rows_after.setdefault(id(row_map[prev]), []).append(html_del)
+            else:
+                nxt = _nearest(el, row_map, "next")
+                if nxt is not None:
+                    ov.rows_before.setdefault(id(row_map[nxt]), []).append(html_del)
             continue
-        nxt = blk.element.getnext()
-        while nxt is not None and nxt not in survivors:
-            nxt = nxt.getnext()
+        if el.tag == W.tbl:
+            html_del = _table_html(r_before, el, _Overlay(), "tbl-del", deleted=True)
+        else:
+            html_del = r_before.paragraph(el, chars=_all(el, "del"), extra_cls="block-del")
+        prev = _nearest(el, para_map, "previous")
+        if prev is not None:
+            key = id(para_map[prev])
+            ov.para_html[key] = (ov.para_html.get(key) or r_after.paragraph(para_map[prev])) \
+                + html_del
+            continue
+        nxt = _nearest(el, para_map, "next")
         if nxt is not None:
-            key = id(survivors[nxt])
-            para_html[key] = html_del + (para_html.get(key) or r_after.paragraph(survivors[nxt]))
+            key = id(para_map[nxt])
+            ov.para_html[key] = html_del + (ov.para_html.get(key)
+                                            or r_after.paragraph(para_map[nxt]))
+
+
+def _nearest(el: etree._Element, survivors: dict, direction: str):
+    node = el.getprevious() if direction == "previous" else el.getnext()
+    while node is not None and node not in survivors:
+        node = node.getprevious() if direction == "previous" else node.getnext()
+    return node
+

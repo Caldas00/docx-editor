@@ -44,6 +44,27 @@ architecture discussion  →  vertical slice  →  verification harness  →  ev
    (`tests/test_regressions.py`) and a fix, and the full eval suite was re-run afterwards
    (gpt-5.5: 66/66).
 
+7. **Second iteration, driven by user feedback.** Trying the app on real documents surfaced
+   three gaps:
+   - "make the green text purple" was declined,
+   - "remove the emojis" was declined (the emojis were 12×12 px pictures),
+   - removing table entries left empty rows behind.
+
+   The same loop was applied to each one:
+   - **Eval case first:** each request became a failing eval case (`evals/cases.json`).
+   - **Engine operation:** a new operation was added with unit tests: `restyle_text`,
+     `delete_images`, the row and table operations, and richer `format_text`.
+   - **Verifier and oracle:** both were extended to predict and check them, and the
+     fuzz test was extended to mix all 11 operations.
+   - **Real model:** the eval suite was re-run on the real model.
+
+   The fuzz test caught two interaction bugs in the new code before any user saw them:
+   - "insert a row, then restyle all bold text",
+   - "insert a paragraph into a cell, then copy that row".
+
+   The same iteration replaced the expensive default model: the evals showed `gpt-6-luna`
+   at 90/90 for about 1 % of `gpt-5.5`'s cost.
+
 ## 2. How AI-generated code is verified
 
 The core idea is to make correctness **checkable by a machine**, so that "the agent says it

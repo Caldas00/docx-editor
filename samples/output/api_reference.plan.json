@@ -1,0 +1,49 @@
+{
+  "summary": "Turn green text purple, remove the small emoji images, and delete the two setter rows from the Session class table.",
+  "operations": [
+    {
+      "op": "restyle_text",
+      "block_id": null,
+      "match": {
+        "bold": null,
+        "italic": null,
+        "underline": null,
+        "strike": null,
+        "color": "70AD47",
+        "highlight": null,
+        "font_size": null
+      },
+      "set": {
+        "bold": null,
+        "italic": null,
+        "underline": null,
+        "strike": null,
+        "color": "7030A0",
+        "highlight": null,
+        "font_size": null
+      }
+    },
+    {
+      "op": "delete_images",
+      "images": [
+        "#1",
+        "#2",
+        "#3",
+        "#4",
+        "#5",
+        "#6",
+        "#7",
+        "#8"
+      ],
+      "block_id": null,
+      "max_size_px": null
+    },
+    {
+      "op": "delete_table_rows",
+      "rows": [
+        "t0.r4",
+        "t0.r6"
+      ]
+    }
+  ]
+}

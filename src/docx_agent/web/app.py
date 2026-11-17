@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from ..config import get_settings
 from ..document import DocxError, DocxPackage, EditPlan
 from ..document.render import render_preview, render_redline
+from ..pricing import estimate_cost
 from ..service import EditOutcome, EditService
 
 STATIC = Path(__file__).parent / "static"
@@ -37,46 +38,50 @@ MAX_UPLOAD = 20 * 1024 * 1024
 SAMPLE_INFO: dict[str, dict[str, Any]] = {
     "session_note.docx": {
         "title": "Session progress note",
-        "description": "Table, lists, image, hyperlink, field, comment, header & footer.",
         "suggestions": [
             "Update the session number to 7 of 12.",
             "The clinician is now Dr. Ana Costa — update her name everywhere.",
             "Add 'Grounding exercise (5-4-3-2-1)' as another intervention used.",
-            "Remove the sentence about reviewing again next session.",
-            "Make 'two thought records' bold.",
             "Change the date to 20 November 2026.",
+        ],
+    },
+    "api_reference.docx": {
+        "title": "API reference",
+        "suggestions": [
+            "Make all the green text purple.",
+            "Remove the emojis.",
+            "Remove the set_date and set_modality rows from the table.",
+            "Add a row for void close() - 'Signs and closes the note.' after is_closed().",
         ],
     },
     "referral_letter.docx": {
         "title": "Referral letter",
-        "description": "Letterhead image, styled table, mixed bold and italic text.",
         "suggestions": [
             "Address the letter to Dr. Rui Almeida instead.",
             "In the summary table, change the anxiety status from Moderate to Mild.",
             "Remove the word 'persistent'.",
-            "Add a sentence at the end of the first paragraph saying the client has consented "
-            "to this referral.",
         ],
     },
     "intake_form.docx": {
         "title": "Client intake form",
-        "description": "Form table and a free-text answer containing a prompt injection.",
         "suggestions": [
             "Change the preferred name to Sam.",
-            "Add 'Prefers morning appointments.' as a new paragraph after the answer 'No.'",
             "Make the consent sentence italic.",
         ],
     },
 }
+GENERIC_SUGGESTIONS = [
+    "Make all the headings dark blue.",
+    "Fix the typo in the second paragraph.",
+    "Remove the last row of the first table.",
+]
 
 
 @dataclass
 class Version:
     path: Path
-    instruction: str | None = None
-    outcome: dict[str, Any] | None = None
+    turn: int | None = None  # index of the conversation turn that produced it
     redline_html: str | None = None
-    seconds: float = 0.0
 
 
 @dataclass
@@ -85,17 +90,23 @@ class DocSession:
     name: str
     dir: Path
     versions: list[Version] = field(default_factory=list)
+    turns: list[dict[str, Any]] = field(default_factory=list)  # the chat, oldest first
     pending: dict[str, Any] | None = None  # interrupted run awaiting an answer
     lock: threading.Lock = field(default_factory=threading.Lock)
-    attempts: list[dict[str, Any]] = field(default_factory=list)  # non-applied outcomes
 
     @property
     def current(self) -> Version:
         return self.versions[-1]
 
 
+class Selection(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    blocks: list[str] = Field(default_factory=list, max_length=60)
+
+
 class EditRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=2000)
+    selection: Selection | None = None
 
 
 class AnswerRequest(BaseModel):
@@ -167,6 +178,7 @@ def _state(s: DocSession, view_version: int | None = None) -> dict[str, Any]:
     v_idx = len(s.versions) - 1 if view_version is None else view_version
     version = s.versions[v_idx]
     pkg = DocxPackage(version.path.read_bytes())
+    sample = SAMPLE_INFO.get(s.name)
     return {
         "id": s.id,
         "name": s.name,
@@ -174,37 +186,40 @@ def _state(s: DocSession, view_version: int | None = None) -> dict[str, Any]:
         "latest": len(s.versions) - 1,
         "preview_html": render_preview(pkg),
         "redline_html": version.redline_html,
-        "outcome": version.outcome,
-        "history": [
-            {"version": i, "instruction": v.instruction, "summary": (v.outcome or {}).get("message"),
-             "seconds": round(v.seconds, 1)}
-            for i, v in enumerate(s.versions) if i > 0
-        ],
-        "pending": s.pending and {"question": s.pending["question"],
-                                  "options": s.pending["options"]},
+        "turn": version.turn,
+        "turns": s.turns,
+        "suggestions": sample["suggestions"] if sample else GENERIC_SUGGESTIONS,
+        "pending": bool(s.pending),
     }
 
 
-def _handle_outcome(s: DocSession, outcome: EditOutcome, instruction: str, started: float,
-                    out_path: Path) -> dict[str, Any]:
-    seconds = time.perf_counter() - started + (s.pending or {}).get("elapsed", 0.0)
-    result = outcome.to_dict()
-    result["seconds"] = round(seconds, 1)
+def _outcome_fields(outcome: EditOutcome) -> dict[str, Any]:
+    data = outcome.to_dict()
+    model = get_service().settings.model
+    data["model"] = model
+    data["cost"] = estimate_cost(model, outcome.usage)
+    return data
+
+
+def _record(s: DocSession, turn: dict[str, Any], outcome: EditOutcome, seconds: float,
+            out_path: Path) -> dict[str, Any]:
+    """Store an outcome in its conversation turn (and a new version when applied)."""
+    turn["seconds"] = round(turn.get("seconds", 0.0) + seconds, 1)
+    turn.update({k: v for k, v in _outcome_fields(outcome).items() if k != "thread_id"})
     if outcome.status == "needs_clarification":
-        s.pending = {"thread_id": outcome.thread_id, "instruction": instruction,
-                     "question": outcome.question, "options": outcome.options,
-                     "out_path": str(out_path), "elapsed": seconds}
-        return {"outcome": result, "session": _state(s)}
-    s.pending = None
-    if outcome.status == "done":
-        before = DocxPackage(s.current.path.read_bytes())
-        after = DocxPackage(out_path.read_bytes())
-        redline = render_redline(before, after, EditPlan.model_validate(outcome.plan))
-        s.versions.append(Version(out_path, instruction, result, redline, seconds))
+        s.pending = {"thread_id": outcome.thread_id, "turn": turn["index"],
+                     "out_path": str(out_path)}
     else:
-        out_path.unlink(missing_ok=True)
-        s.attempts.append({"instruction": instruction, "outcome": result})
-    return {"outcome": result, "session": _state(s)}
+        s.pending = None
+        if outcome.status == "done":
+            before = DocxPackage(s.current.path.read_bytes())
+            after = DocxPackage(out_path.read_bytes())
+            redline = render_redline(before, after, EditPlan.model_validate(outcome.plan))
+            s.versions.append(Version(out_path, turn["index"], redline))
+            turn["version"] = len(s.versions) - 1
+        else:
+            out_path.unlink(missing_ok=True)
+    return {"turn": turn, "session": _state(s)}
 
 
 # ---------------------------------------------------------------- routes
@@ -215,10 +230,8 @@ def index() -> str:
 
 @app.get("/api/config")
 def config() -> dict[str, Any]:
-    samples = []
-    for name, info in SAMPLE_INFO.items():
-        if (SAMPLES_DIR / name).exists():
-            samples.append({"name": name, **info})
+    samples = [{"name": name, "title": info["title"]} for name, info in SAMPLE_INFO.items()
+               if (SAMPLES_DIR / name).exists()]
     return {"model": get_settings().model, "samples": samples,
             "has_api_key": bool(os.getenv("OPENAI_API_KEY"))}
 
@@ -256,11 +269,19 @@ def edit(sid: str, req: EditRequest) -> dict[str, Any]:
     if not s.lock.acquire(blocking=False):
         raise HTTPException(409, "An edit is already running for this document.")
     try:
-        s.pending = None
+        if s.pending:  # a new instruction abandons an unanswered question
+            s.turns[s.pending["turn"]]["status"] = "abandoned"
+            s.pending = None
+        turn = {"index": len(s.turns), "instruction": req.instruction,
+                "selection": req.selection.model_dump() if req.selection else None,
+                "answers": [], "status": "running", "version": None}
+        s.turns.append(turn)
         out_path = s.dir / f"v{len(s.versions)}-{uuid.uuid4().hex[:6]}.docx"
         started = time.perf_counter()
-        outcome = get_service().start(s.current.path, req.instruction, out_path)
-        return _handle_outcome(s, outcome, req.instruction, started, out_path)
+        outcome = get_service().start(
+            s.current.path, req.instruction, out_path,
+            selection=req.selection.model_dump() if req.selection else None)
+        return _record(s, turn, outcome, time.perf_counter() - started, out_path)
     finally:
         s.lock.release()
 
@@ -274,10 +295,12 @@ def answer(sid: str, req: AnswerRequest) -> dict[str, Any]:
         raise HTTPException(409, "An edit is already running for this document.")
     try:
         pending = s.pending
+        turn = s.turns[pending["turn"]]
+        turn["answers"].append({"question": turn.get("question"), "answer": req.answer})
         started = time.perf_counter()
         outcome = get_service().resume(pending["thread_id"], req.answer)
-        return _handle_outcome(s, outcome, pending["instruction"], started,
-                               Path(pending["out_path"]))
+        return _record(s, turn, outcome, time.perf_counter() - started,
+                       Path(pending["out_path"]))
     finally:
         s.lock.release()
 
@@ -287,7 +310,9 @@ def undo(sid: str) -> dict[str, Any]:
     s = _session(sid)
     if len(s.versions) <= 1:
         raise HTTPException(409, "Nothing to undo.")
-    s.versions.pop()
+    version = s.versions.pop()
+    if version.turn is not None:
+        s.turns[version.turn]["undone"] = True
     s.pending = None
     return _state(s)
 
@@ -305,4 +330,3 @@ def download(sid: str, version: int | None = None) -> FileResponse:
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=f"{stem}{suffix}.docx",
     )
-

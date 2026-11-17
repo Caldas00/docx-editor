@@ -174,14 +174,19 @@
     }
   },
   {
-    "id": "out-of-scope-table-row",
+    "id": "add-table-row-session-details",
     "doc": "session_note.docx",
     "instruction": "Add a new row to the session details table: 'Next review' - 'December 2026'.",
     "expect": {
-      "status": [
-        "declined",
-        "needs_clarification"
-      ]
+      "status": "done",
+      "table_rows": [
+        6
+      ],
+      "doc_contains": [
+        "Next review",
+        "December 2026"
+      ],
+      "no_empty_rows": true
     }
   },
   {
@@ -319,6 +324,133 @@
           "Prefers morning appointments.",
           "Normal"
         ]
+      ],
+      "max_changed": 1
+    }
+  },
+  {
+    "id": "recolour-green-to-purple",
+    "doc": "api_reference.docx",
+    "instruction": "Make all the green text purple.",
+    "expect": {
+      "status": "done",
+      "colors_absent": [
+        "70AD47"
+      ],
+      "colors_present": [
+        "7030A0"
+      ],
+      "max_changed": 0
+    }
+  },
+  {
+    "id": "remove-icons",
+    "doc": "api_reference.docx",
+    "instruction": "Remove the emojis.",
+    "expect": {
+      "status": "done",
+      "images": 0,
+      "doc_contains": [
+        "- Include the SDK header",
+        "#include <notes/sdk.hpp>"
+      ]
+    }
+  },
+  {
+    "id": "delete-table-rows",
+    "doc": "api_reference.docx",
+    "instruction": "Remove the set_date and set_modality entries from the Session class table.",
+    "expect": {
+      "status": "done",
+      "doc_not_contains": [
+        "set_date(Date d)",
+        "set_modality(Modality m)"
+      ],
+      "table_rows": [
+        6
+      ],
+      "no_empty_rows": true,
+      "doc_contains": [
+        "get_date()",
+        "get_modality()"
+      ]
+    }
+  },
+  {
+    "id": "insert-table-row",
+    "doc": "api_reference.docx",
+    "instruction": "Add a row to the Session class table for void close(), described as 'Signs and closes the note.', right after is_closed().",
+    "expect": {
+      "status": "done",
+      "table_rows": [
+        9
+      ],
+      "doc_contains": [
+        "close()",
+        "Signs and closes the note."
+      ],
+      "no_empty_rows": true
+    }
+  },
+  {
+    "id": "delete-table",
+    "doc": "api_reference.docx",
+    "instruction": "Delete the Session class table.",
+    "expect": {
+      "status": "done",
+      "table_rows": [],
+      "doc_contains": [
+        "2. Session class"
+      ]
+    }
+  },
+  {
+    "id": "highlight-text",
+    "doc": "session_note.docx",
+    "instruction": "Highlight 'No current risk indicators.' in yellow and make it red.",
+    "expect": {
+      "status": "done",
+      "max_changed": 0,
+      "colors_present": [
+        "FF0000"
+      ]
+    }
+  },
+  {
+    "id": "selection-make-bold",
+    "doc": "api_reference.docx",
+    "selection": {
+      "text": "load() throws if the file is not valid JSON.",
+      "blocks": [
+        "p11"
+      ]
+    },
+    "instruction": "make this bold",
+    "expect": {
+      "status": "done",
+      "bold": [
+        "load() throws if the file is not valid JSON."
+      ],
+      "max_changed": 0
+    }
+  },
+  {
+    "id": "selection-translate",
+    "doc": "session_note.docx",
+    "selection": {
+      "text": "Paced breathing practice (4-6 pattern) in session",
+      "blocks": [
+        "p9"
+      ]
+    },
+    "instruction": "traduz isto para português",
+    "expect": {
+      "status": "done",
+      "doc_not_contains": [
+        "Paced breathing practice (4-6 pattern) in session"
+      ],
+      "doc_contains": [
+        "Thought record review focusing on catastrophic predictions"
       ],
       "max_changed": 1
     }

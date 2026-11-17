@@ -34,7 +34,7 @@ from ..document.model import build_index, render_outline
 from ..document.ops import DocumentEditor, EditError, EditPlan
 from ..document.package import DocxError, DocxPackage
 from ..document.verify import verify_edit
-from .prompts import NO_TOOL_NUDGE, SYSTEM_PROMPT
+from .prompts import NO_TOOL_NUDGE, SELECTION_NOTE, SYSTEM_PROMPT
 from .tools import (
     CLARIFY,
     DECLINE,
@@ -54,11 +54,13 @@ class AgentState(TypedDict, total=False):
     instruction: str
     input_path: str
     output_path: str
+    selection: dict[str, Any] | None  # {"text": str, "blocks": [ids]} from the UI
     # working data
     doc_name: str
     messages: Annotated[list[AnyMessage], add_messages]
     steps: int
     attempts: int
+    usage: dict[str, int]  # tokens: input / output / cached
     candidate_path: str
     # results
     plan: dict[str, Any] | None
@@ -99,9 +101,16 @@ class DocxEditAgent:
             DocxPackage(Path(state["input_path"]).read_bytes())  # fail fast on bad input
         except (OSError, DocxError) as exc:
             return {"status": "failed", "message": f"Could not open the document: {exc}"}
+        content = state["instruction"]
+        sel = state.get("selection") or {}
+        if (sel.get("text") or "").strip():
+            content += SELECTION_NOTE.format(
+                blocks=", ".join(str(b) for b in sel.get("blocks", [])[:40]),
+                text=sel["text"].strip()[:4000])
         return {
             "doc_name": Path(state["input_path"]).name,
-            "messages": [HumanMessage(content=state["instruction"])],
+            "messages": [HumanMessage(content=content)],
+            "usage": {"input": 0, "output": 0, "cached": 0},
             "steps": 0,
             "attempts": 0,
             "status": "running",
@@ -122,7 +131,12 @@ class DocxEditAgent:
             outline=outline,
         ))
         ai = self.llm.invoke([system, *state["messages"]])
-        return {"messages": [ai], "steps": state.get("steps", 0) + 1}
+        usage = dict(state.get("usage") or {"input": 0, "output": 0, "cached": 0})
+        meta = getattr(ai, "usage_metadata", None) or {}
+        usage["input"] += int(meta.get("input_tokens") or 0)
+        usage["output"] += int(meta.get("output_tokens") or 0)
+        usage["cached"] += int((meta.get("input_token_details") or {}).get("cache_read") or 0)
+        return {"messages": [ai], "steps": state.get("steps", 0) + 1, "usage": usage}
 
     def explore(self, state: AgentState) -> dict[str, Any]:
         ai: AIMessage = state["messages"][-1]

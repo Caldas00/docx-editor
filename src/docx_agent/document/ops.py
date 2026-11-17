@@ -31,7 +31,9 @@ from .model import (
     Piece,
     _walk_container,
     build_index,
+    image_info,
     paragraph_view,
+    run_props,
 )
 from .ns import XML_SPACE, W, qn
 from .package import DocxPackage
@@ -116,10 +118,42 @@ class DeleteParagraph(_Op):
 
     op: Literal["delete_paragraph"]
     block_id: str = Field(description="Paragraph id.")
+    delete_images: bool = Field(
+        default=False,
+        description="Must be true to delete a paragraph that contains pictures (only when the "
+                    "user wants those pictures gone too).",
+    )
+
+
+HexColor = Annotated[str, Field(pattern=r"^(?:[0-9A-Fa-f]{6}|auto)$")]
+Highlight = Literal[
+    "yellow", "green", "cyan", "magenta", "blue", "red", "darkBlue", "darkCyan", "darkGreen",
+    "darkMagenta", "darkRed", "darkYellow", "darkGray", "lightGray", "black", "none",
+]
+
+
+class Formatting(BaseModel):
+    """Run formatting. Null fields are ignored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bold: bool | None = None
+    italic: bool | None = None
+    underline: bool | None = None
+    strike: bool | None = None
+    color: HexColor | None = Field(
+        default=None, description="Text colour as RRGGBB hex, e.g. 7030A0 (purple), or 'auto'."
+    )
+    highlight: Highlight | None = Field(default=None, description="Highlighter colour or 'none'.")
+    font_size: float | None = Field(default=None, ge=1, le=400, description="Size in points.")
+
+    def props(self) -> dict:
+        return {k: v for k, v in self.model_dump().items() if v is not None}
 
 
 class FormatText(_Op):
-    """Change bold/italic/underline of an exact piece of text."""
+    """Change the formatting of an exact piece of text (bold, italic, underline, strike,
+    colour, highlight, font size)."""
 
     op: Literal["format_text"]
     block_id: str | None = Field(description="Paragraph id. Null = whole document.")
@@ -127,11 +161,77 @@ class FormatText(_Op):
     bold: bool | None = Field(default=None, description="true/false to set, null to leave as is.")
     italic: bool | None = None
     underline: bool | None = None
+    strike: bool | None = None
+    color: HexColor | None = Field(
+        default=None, description="Text colour as RRGGBB hex, e.g. 7030A0 (purple), or 'auto'."
+    )
+    highlight: Highlight | None = None
+    font_size: float | None = Field(default=None, ge=1, le=400, description="Size in points.")
     occurrence: Occurrence = Field(default=None, description=_OCC_DESC)
+
+    def props(self) -> dict:
+        return Formatting.model_validate(
+            self.model_dump(include=set(Formatting.model_fields))).props()
+
+
+class RestyleText(_Op):
+    """Change the formatting of ALL existing text that currently has some formatting, e.g.
+    make every green run purple, or un-bold all red text. Text is not changed; paragraphs
+    added earlier in the same plan are not affected."""
+
+    op: Literal["restyle_text"]
+    block_id: str | None = Field(default=None, description="Limit to one paragraph; null = whole document.")
+    match: Formatting = Field(description="Formatting the text has now (e.g. {color: '70AD47'}).")
+    set: Formatting = Field(description="Formatting to apply to that text.")
+
+
+class DeleteImages(_Op):
+    """Delete pictures (icons, emojis, photos, charts). Shapes and text boxes are kept."""
+
+    op: Literal["delete_images"]
+    images: list[str] | None = Field(
+        default=None, description="Picture refs from the outline, e.g. ['#18', '#19']."
+    )
+    block_id: str | None = Field(default=None, description="Only pictures in this paragraph.")
+    max_size_px: int | None = Field(
+        default=None, ge=1,
+        description="Only pictures whose width AND height are at most this (e.g. 32 for icons).",
+    )
+
+
+class DeleteTableRows(_Op):
+    """Delete whole table rows (use this instead of emptying their cells)."""
+
+    op: Literal["delete_table_rows"]
+    rows: list[str] = Field(min_length=1, description="Row ids: table id + '.r' + row index, e.g. 't1.r23'.")
+
+
+class InsertTableRow(_Op):
+    """Insert a new table row next to an existing one, copying a row's formatting."""
+
+    op: Literal["insert_table_row"]
+    row: str = Field(description="Existing row id to insert next to, e.g. 't1.r3'.")
+    position: Literal["before", "after"]
+    cells: list[str] = Field(
+        min_length=1,
+        description="Text of each cell, left to right; one entry per cell of the template row "
+                    "('' for an empty cell, '\\n' for several paragraphs).",
+    )
+    format_like_row: str | None = Field(
+        default=None, description="Row to copy the look from (default: `row`). Avoid header rows."
+    )
+
+
+class DeleteTable(_Op):
+    """Delete a whole table."""
+
+    op: Literal["delete_table"]
+    table_id: str = Field(description="Table id, e.g. 't1'.")
 
 
 EditOp = Annotated[
-    ReplaceText | DeleteText | InsertText | InsertParagraph | DeleteParagraph | FormatText,
+    ReplaceText | DeleteText | InsertText | InsertParagraph | DeleteParagraph | FormatText
+    | RestyleText | DeleteImages | DeleteTableRows | InsertTableRow | DeleteTable,
     Field(discriminator="op"),
 ]
 
@@ -344,6 +444,114 @@ def _split_run_at(piece: Piece, offset: int) -> None:
     run.addnext(new_run)
 
 
+_ON_OFF_TAGS = {"bold": W.b, "italic": W.i, "strike": W.strike}
+_SZ_CS = qn("w:szCs")
+
+
+def apply_props(run: etree._Element, props: dict) -> None:
+    """Write formatting ``props`` (see :class:`Formatting`) into a run's rPr."""
+    for key, value in props.items():
+        if key in _ON_OFF_TAGS:
+            _set_rpr_prop(run, _ON_OFF_TAGS[key], None if value else "0")
+        elif key == "underline":
+            _set_rpr_prop(run, W.u, "single" if value else "none")
+        elif key == "color":
+            _set_rpr_prop(run, W.color, "auto" if value == "auto" else value.upper())
+        elif key == "highlight":
+            _set_rpr_prop(run, W.highlight, value)
+        elif key == "font_size":
+            half_points = str(round(value * 2))
+            _set_rpr_prop(run, W.sz, half_points)
+            _set_rpr_prop(run, _SZ_CS, half_points)
+
+
+def normalise_prop(key: str, value):
+    """Map a requested value to what :func:`run_props` reports after it is applied."""
+    if key == "color":
+        return None if value == "auto" else value.upper()
+    if key == "highlight":
+        return None if value == "none" else value
+    if key == "font_size":
+        return round(value * 2) / 2
+    return value
+
+
+def props_match(actual: dict, wanted: dict) -> bool:
+    return all(actual.get(k) == normalise_prop(k, v) for k, v in wanted.items())
+
+
+def describe_props(props: dict) -> str:
+    return ", ".join(f"{k}={'#' + v if k == 'color' and v != 'auto' else v}"
+                     for k, v in props.items())
+
+
+def normalise_image_refs(refs: list[str]) -> set[str]:
+    return {re.sub(r"[⟦⟧#\s]|IMAGE", "", r) for r in refs if r.strip()}
+
+
+def image_selected(piece: Piece, refs: set[str] | None, max_px: int | None) -> bool:
+    """Does a delete_images selection cover this piece? Only pictures qualify."""
+    if piece.kind != "protected" or piece.label != "IMAGE":
+        return False
+    info = image_info(piece.node)
+    if refs is not None and info.ref not in refs:
+        return False
+    if max_px is not None:
+        return bool(info.width_px and info.height_px
+                    and info.width_px <= max_px and info.height_px <= max_px)
+    return True
+
+
+_W_NSMAP = {"w": W.p[1:].split("}")[0]}
+_ROW_ID = re.compile(r"^(?P<table>.+)\.r(?P<row>\d+)$")
+
+
+def new_row_skeleton(template: etree._Element) -> etree._Element:
+    """An empty <w:tr> carrying the template row's properties (minus header-repeat and
+    revision markup). Shared with the verifier, which predicts the new row from it."""
+    tr = etree.Element(W.tr, nsmap=_W_NSMAP)  # 'w' prefix, as in the document
+    for child in template:
+        if child.tag in (qn("w:tblPrEx"), qn("w:trPr")):
+            prop = _strip_revision_markup(copy.deepcopy(child))
+            for tag in ("w:tblHeader", "w:trPrChange", "w:tblPrExChange"):
+                for found in prop.findall(qn(tag)):
+                    prop.remove(found)
+            tr.append(prop)
+    return tr
+
+
+def new_cell_skeleton(template: etree._Element) -> etree._Element:
+    """An empty <w:tc> with the template cell's properties, never vertically merged."""
+    tc = etree.Element(W.tc, nsmap=_W_NSMAP)
+    tcpr = template.find(W.tcPr)
+    if tcpr is not None:
+        tcpr = _strip_revision_markup(copy.deepcopy(tcpr))
+        for tag in ("w:vMerge", "w:cellIns", "w:cellDel", "w:cellMerge", "w:tcPrChange"):
+            for found in tcpr.findall(qn(tag)):
+                tcpr.remove(found)
+        tc.append(tcpr)
+    return tc
+
+
+def cell_template_paragraph(tc: etree._Element) -> etree._Element:
+    p = tc.find(W.p)
+    return p if p is not None else tc.find(".//" + W.p)
+
+
+def removal_problem(el: etree._Element) -> str | None:
+    """Would removing this subtree corrupt something outside it?"""
+    if any(True for t in (W.commentRangeStart, W.commentRangeEnd, W.commentReference)
+           for _ in el.iter(t)):
+        return "it is anchored to a comment"
+    starts = {b.get(W.id) for b in el.iter(W.bookmarkStart)}
+    ends = {b.get(W.id) for b in el.iter(W.bookmarkEnd)}
+    if starts != ends:
+        return "it holds one end of a bookmark that continues elsewhere"
+    if any(True for _ in el.iter(W.sectPr)):
+        return "it carries a section break"
+    return None
+
+
 # ================================================================ change log
 @dataclass
 class Change:
@@ -370,6 +578,9 @@ class DocumentEditor:
         self.index: DocumentIndex = build_index(pkg)
         self._ids: dict[etree._Element, str] = {b.element: b.id for b in self.index.blocks}
         self._deleted: dict[str, int] = {}
+        # original row lists, so row ids keep their meaning after earlier row edits
+        self._table_rows: dict[etree._Element, list[etree._Element]] = {
+            b.element: b.element.findall(W.tr) for b in self.index.blocks if b.kind == "table"}
         self._new_counter = 0
         self.result = ApplyResult()
 
@@ -384,12 +595,39 @@ class DocumentEditor:
             )
         block = self.index.get(block_id)
         if block is None:
-            raise EditError(f"There is no block with id {block_id!r}.")
+            hint = (f" {block_id!r} is a table row: use it with delete_table_rows / "
+                    f"insert_table_row; paragraphs in it look like {block_id}.c0.p0."
+                    if _ROW_ID.match(block_id) else "")
+            raise EditError(f"There is no block with id {block_id!r}.{hint}")
         if block.kind not in kinds:
             raise EditError(f"{block_id} is a {block.kind}, expected a {' or '.join(kinds)}.")
         if not block.editable:
             raise EditError(f"{block_id} is read-only ({block.readonly_reason}).")
+        if not self._attached(block.element):
+            raise EditError(f"{block_id} was removed by an earlier operation in this plan.")
         return block
+
+    def _attached(self, el: etree._Element) -> bool:
+        node = el
+        while node.getparent() is not None:
+            node = node.getparent()
+        return node is self.pkg.document
+
+    def _row(self, row_id: str) -> tuple[etree._Element, etree._Element]:
+        """Resolve 't1.r3' to (table element, row element) in the original numbering."""
+        m = _ROW_ID.match(row_id.strip())
+        if m is None:
+            raise EditError(f"{row_id!r} is not a row id; use table id + '.r' + row index, "
+                            "e.g. 't1.r3'.")
+        table = self._block(m.group("table"), ("table",)).element
+        rows = self._table_rows.setdefault(table, table.findall(W.tr))
+        idx = int(m.group("row"))
+        if idx >= len(rows):
+            raise EditError(f"{m.group('table')} has only {len(rows)} rows (r0-r{len(rows) - 1}).")
+        tr = rows[idx]
+        if not self._attached(tr):
+            raise EditError(f"{row_id} was removed by an earlier operation in this plan.")
+        return table, tr
 
     def _current_paragraphs(self) -> list[tuple[str, etree._Element]]:
         blocks: list[Block] = []
@@ -630,6 +868,16 @@ class DocumentEditor:
             self._delete_paragraph(idx, op)
         elif isinstance(op, FormatText):
             self._format_text(idx, op)
+        elif isinstance(op, RestyleText):
+            self._restyle_text(idx, op)
+        elif isinstance(op, DeleteImages):
+            self._delete_images(idx, op)
+        elif isinstance(op, DeleteTableRows):
+            self._delete_table_rows(idx, op)
+        elif isinstance(op, InsertTableRow):
+            self._insert_table_row(idx, op)
+        elif isinstance(op, DeleteTable):
+            self._delete_table(idx, op)
         else:  # pragma: no cover - pydantic guarantees the union
             raise EditError(f"Unknown operation {op!r}")
 
@@ -651,9 +899,7 @@ class DocumentEditor:
             for p in new_paras:
                 anchor.addprevious(p)
         for p in new_paras:
-            self._new_counter += 1
-            self._ids[p] = f"new{self._new_counter}"
-            self._record(idx, "insert_paragraph", self._ids[p], None, paragraph_view(p).text)
+            self._record(idx, "insert_paragraph", self._new_id(p), None, paragraph_view(p).text)
         self.result.inserted += len(new_paras)
 
     @staticmethod
@@ -680,6 +926,8 @@ class DocumentEditor:
         ppr = template.find(W.pPr)
         if ppr is not None:
             p.append(_strip_revision_markup(copy.deepcopy(ppr)))
+        if not text:
+            return p  # an empty paragraph has no run
         run = etree.SubElement(p, W.r)
         rpr = self._dominant_rpr(template)
         if rpr is not None:
@@ -687,13 +935,24 @@ class DocumentEditor:
         run.append(_new_t(text))
         return p
 
+    def _new_id(self, el: etree._Element) -> str:
+        self._new_counter += 1
+        self._ids[el] = f"new{self._new_counter}"
+        return self._ids[el]
+
     # ------------------------------------------------------ delete paragraph
     def _delete_paragraph(self, idx: int, op: DeleteParagraph) -> None:
         block = self._block(op.block_id)
         el = block.element
         view = paragraph_view(el)
+        allowed = {"TAB", "BR", "NBHYPHEN"} | ({"IMAGE"} if op.delete_images else set())
         blockers = sorted({pc.label or "protected" for pc in view.pieces
-                           if pc.kind == "protected" and pc.label not in ("TAB", "BR", "NBHYPHEN")})
+                           if pc.kind == "protected" and pc.label not in allowed})
+        if blockers == ["IMAGE"]:
+            raise EditError(
+                f"{op.block_id} contains pictures. Set delete_images=true only if the user wants "
+                "them removed as well; otherwise delete its text with delete_text."
+            )
         if blockers:
             raise EditError(
                 f"{op.block_id} contains {', '.join(b.lower() for b in blockers)}; deleting it "
@@ -742,11 +1001,10 @@ class DocumentEditor:
 
     # ----------------------------------------------------------- format text
     def _format_text(self, idx: int, op: FormatText) -> None:
-        props = {k: v for k, v in (("bold", op.bold), ("italic", op.italic),
-                                   ("underline", op.underline)) if v is not None}
+        props = op.props()
         if not props:
-            raise EditError("format_text needs at least one of bold/italic/underline.")
-        label = f"{op.find} ({', '.join(f'{k}={v}' for k, v in props.items())})"
+            raise EditError("format_text needs at least one formatting property to set.")
+        label = f"{op.find} ({describe_props(props)})"
         for bid, el, pos in self._ordered_for_mutation(
             self._matches(op.block_id, op.find, op.occurrence)
         ):
@@ -774,15 +1032,171 @@ class DocumentEditor:
                 if pc.run is not None and pc.run not in runs:
                     runs.append(pc.run)
             for run in runs:
-                if "bold" in props:
-                    _set_rpr_prop(run, W.b, None if props["bold"] else "0")
-                if "italic" in props:
-                    _set_rpr_prop(run, W.i, None if props["italic"] else "0")
-                if "underline" in props:
-                    _set_rpr_prop(run, W.u, "single" if props["underline"] else "none")
+                apply_props(run, props)
             if paragraph_view(el).text != text_before:  # pragma: no cover - defensive
                 raise EditError("internal error: formatting changed the text")
             self._record(idx, "format_text", bid, op.find, label)
+
+    def _scope(self, block_id: str | None) -> list[tuple[str, etree._Element]]:
+        if block_id is not None:
+            return [(block_id, self._block(block_id).element)]
+        return self._current_paragraphs()
+
+    # ---------------------------------------------------------- restyle text
+    def _restyle_text(self, idx: int, op: RestyleText) -> None:
+        match, new = op.match.props(), op.set.props()
+        if not match or not new:
+            raise EditError("restyle_text needs at least one property in `match` and in `set`.")
+        present: dict[str, int] = {}
+        hits = 0
+        for bid, el in self._scope(op.block_id):
+            if bid.startswith("new"):
+                continue  # restyling applies to the document's existing text
+            runs: list[etree._Element] = []
+            for pc in paragraph_view(el).pieces:
+                if pc.kind != "text" or pc.run is None or not pc.text.strip():
+                    continue
+                props = run_props(pc.run)
+                if props_match(props, match):
+                    if pc.run not in runs:
+                        runs.append(pc.run)
+                else:
+                    for k in match:
+                        if props.get(k) not in (None, False):
+                            label = f"{k}={props[k]}"
+                            present[label] = present.get(label, 0) + 1
+            if not runs:
+                continue
+            hits += len(runs)
+            for run in runs:
+                apply_props(run, new)
+            text = paragraph_view(el).text
+            self._record(idx, "restyle_text", bid, text, f"{text} ({describe_props(new)})")
+        if not hits:
+            where = op.block_id or "the document"
+            seen = ", ".join(f"{k} ({n} runs)" for k, n in sorted(
+                present.items(), key=lambda kv: -kv[1])[:10]) or "none"
+            raise EditError(f"No text in {where} has {describe_props(match)}. "
+                            f"Values present for those properties: {seen}.")
+
+    # --------------------------------------------------------- delete images
+    def _delete_images(self, idx: int, op: DeleteImages) -> None:
+        if op.images is None and op.block_id is None and op.max_size_px is None:
+            raise EditError("delete_images needs `images`, `block_id` or `max_size_px` to say "
+                            "which pictures to delete.")
+        refs = normalise_image_refs(op.images) if op.images is not None else None
+        found: set[str | None] = set()
+        available: list[str] = []
+        for bid, el in self._scope(op.block_id):
+            view = paragraph_view(el)
+            hits = [pc for pc in view.pieces if image_selected(pc, refs, op.max_size_px)]
+            available += [f"{image_info(pc.node).describe()} in {bid}" for pc in view.pieces
+                          if pc.kind == "protected" and pc.label == "IMAGE"]
+            if not hits:
+                continue
+            before = view.text
+            for pc in hits:
+                found.add(image_info(pc.node).ref)
+                _remove(pc.node)
+            _clean_runs([pc.run for pc in hits if pc.run is not None])
+            self._record(idx, "delete_images", bid, before, paragraph_view(el).text)
+        missing = sorted(refs - found) if refs is not None else []
+        if not found or missing:
+            what = f"pictures {', '.join('#' + m for m in missing)}" if missing else \
+                "any matching picture"
+            listing = "; ".join(available[:15]) or "none"
+            raise EditError(f"Could not find {what} in {op.block_id or 'the document'}. "
+                            f"Pictures available: {listing}.")
+
+    # ------------------------------------------------------------ table rows
+    def _delete_table_rows(self, idx: int, op: DeleteTableRows) -> None:
+        targets: dict[etree._Element, list[tuple[str, etree._Element]]] = {}
+        for row_id in dict.fromkeys(op.rows):
+            table, tr = self._row(row_id)
+            targets.setdefault(table, []).append((row_id, tr))
+        for table, rows in targets.items():
+            current = table.findall(W.tr)
+            doomed = {id(tr) for _, tr in rows}
+            if all(id(tr) in doomed for tr in current):
+                raise EditError("That would delete every row of the table; use delete_table.")
+            for row_id, tr in rows:
+                problem = removal_problem(tr)
+                if problem:
+                    raise EditError(f"Row {row_id} cannot be deleted: {problem}.")
+                if self._starts_vertical_merge(tr, current, doomed):
+                    raise EditError(
+                        f"Row {row_id} starts a vertically merged cell that continues in the "
+                        "next row; delete those rows together or edit the text instead."
+                    )
+            for row_id, tr in rows:
+                before = " | ".join(paragraph_view(p).text for p in tr.iter(W.p))
+                _remove(tr)
+                self._record(idx, "delete_table_row", row_id, before, None)
+
+    @staticmethod
+    def _starts_vertical_merge(tr: etree._Element, rows: list[etree._Element],
+                               doomed: set[int]) -> bool:
+        restarts = [tc for tc in tr.findall(W.tc)
+                    if (tc.find(W.tcPr) is not None and tc.find(W.tcPr).find(W.vMerge) is not None
+                        and tc.find(W.tcPr).find(W.vMerge).get(W.val) == "restart")]
+        if not restarts:
+            return False
+        later = [r for r in rows[rows.index(tr) + 1:] if id(r) not in doomed]
+        if not later:
+            return False
+        for tc in later[0].findall(W.tc):
+            tcpr = tc.find(W.tcPr)
+            vm = tcpr.find(W.vMerge) if tcpr is not None else None
+            if vm is not None and vm.get(W.val) in (None, "continue"):
+                return True
+        return False
+
+    def _insert_table_row(self, idx: int, op: InsertTableRow) -> None:
+        table, anchor = self._row(op.row)
+        _, template = self._row(op.format_like_row) if op.format_like_row else (table, anchor)
+        if any(child.tag not in (W.tc, qn("w:trPr"), qn("w:tblPrEx")) for child in template):
+            raise EditError("The template row contains content controls or custom XML; pick "
+                            "another row as format_like_row.")
+        cells = template.findall(W.tc)
+        if len(op.cells) != len(cells):
+            raise EditError(f"The template row has {len(cells)} cells but {len(op.cells)} cell "
+                            "texts were given; give exactly one text per cell.")
+        new_tr = new_row_skeleton(template)
+        texts = []
+        for tc, cell_text in zip(cells, op.cells):
+            new_tc = new_cell_skeleton(tc)
+            # the cell's first *original* paragraph (not one added earlier in this plan)
+            tpl_p = next((q for q in tc.findall(W.p)
+                          if not self._ids.get(q, "new").startswith("new")),
+                         cell_template_paragraph(tc))
+            lines = cell_text.replace("\r\n", "\n").split("\n")
+            for line in lines:
+                p = self._make_paragraph(tpl_p, _check_inline_text(line, "cell text"))
+                self._new_id(p)
+                new_tc.append(p)
+            new_tr.append(new_tc)
+            texts.append(cell_text)
+        if op.position == "after":
+            anchor.addnext(new_tr)
+        else:
+            anchor.addprevious(new_tr)
+        self.result.inserted += 1
+        self._record(idx, "insert_table_row", f"{op.row} ({op.position})", None,
+                     " | ".join(texts))
+
+    def _delete_table(self, idx: int, op: DeleteTable) -> None:
+        block = self._block(op.table_id, ("table",))
+        el = block.element
+        problem = removal_problem(el)
+        if problem:
+            raise EditError(f"{op.table_id} cannot be deleted: {problem}.")
+        prev, nxt = el.getprevious(), el.getnext()
+        if prev is not None and nxt is not None and prev.tag == W.tbl and nxt.tag == W.tbl:
+            raise EditError(f"Deleting {op.table_id} would merge the tables around it.")
+        before = f"table with {len(el.findall(W.tr))} rows"
+        _remove(el)
+        self._deleted[op.table_id] = idx
+        self._record(idx, "delete_table", op.table_id, before, None)
 
 
 def apply_plan(pkg: DocxPackage, plan: EditPlan) -> ApplyResult:

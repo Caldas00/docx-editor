@@ -34,6 +34,8 @@ from docx_agent.document.model import (  # noqa: E402
     paragraph_view,
     run_flags,
 )
+from docx_agent.document.ns import W  # noqa: E402
+from docx_agent.pricing import estimate_cost  # noqa: E402
 from docx_agent.service import EditService  # noqa: E402
 
 SAMPLES = ROOT / "samples" / "input"
@@ -90,6 +92,26 @@ def check(expect: dict, outcome, src: Path, out: Path) -> list[str]:
     for needle in expect.get("italic", []):
         if not flagged(after, needle, 1):
             errors.append(f"{needle!r} is not italic")
+    pkg = DocxPackage(out.read_bytes())
+    colors = {c.get(W.val, "").upper() for c in pkg.body.iter(W.color)}
+    for c in expect.get("colors_absent", []):
+        if c.upper() in colors:
+            errors.append(f"colour #{c} still present")
+    for c in expect.get("colors_present", []):
+        if c.upper() not in colors:
+            errors.append(f"colour #{c} not applied")
+    if "images" in expect:
+        n = sum(1 for _ in pkg.body.iter(W.drawing))
+        if n != expect["images"]:
+            errors.append(f"{n} pictures left (wanted {expect['images']})")
+    tables = [b for b in build_index(pkg).blocks if b.kind == "table" and b.depth == 0]
+    if "table_rows" in expect and [t.rows for t in tables] != expect["table_rows"]:
+        errors.append(f"table rows {[t.rows for t in tables]} (wanted {expect['table_rows']})")
+    if expect.get("no_empty_rows"):
+        for t in tables:
+            for i, tr in enumerate(t.element.findall(W.tr)):
+                if not "".join(paragraph_view(q).text for q in tr.iter(W.p)).strip():
+                    errors.append(f"{t.id}.r{i} is an empty row")
     if "max_changed" in expect:
         n = changed_count([t for t, _, _ in before], [t for t, _, _ in after])
         if n > expect["max_changed"]:
@@ -111,6 +133,9 @@ class Result:
     llm_calls: int
     errors: list[str] = field(default_factory=list)
     summary: str = ""
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_cached: int = 0
 
 
 def run_case(case: dict, model: str) -> Result:
@@ -121,7 +146,8 @@ def run_case(case: dict, model: str) -> Result:
         out = Path(tmp) / "out.docx"
         t0 = time.perf_counter()
         try:
-            outcome = service.start(src, case["instruction"], out)
+            outcome = service.start(src, case["instruction"], out,
+                                    selection=case.get("selection"))
             calls = outcome.llm_calls
             errors = check(case["expect"], outcome, src, out)
             if not errors and "answer" in case:
@@ -131,8 +157,9 @@ def run_case(case: dict, model: str) -> Result:
         except Exception as exc:  # noqa: BLE001 - an eval run must report, not crash
             return Result(case["id"], model, False, time.perf_counter() - t0, 0,
                           [f"exception: {exc!r}"])
+        u = outcome.usage or {}
         return Result(case["id"], model, not errors, time.perf_counter() - t0, calls, errors,
-                      outcome.message)
+                      outcome.message, u.get("input", 0), u.get("output", 0), u.get("cached", 0))
 
 
 def main() -> int:
@@ -159,14 +186,19 @@ def main() -> int:
         rs = [r for r in results if r.model == m]
         passed = sum(r.ok for r in rs)
         lat = statistics.median(r.seconds for r in rs)
-        lines += [f"## {m}: {passed}/{len(rs)} passed, median {lat:.1f}s", "",
+        costs = [estimate_cost(m, {"input": r.tokens_in, "output": r.tokens_out,
+                                   "cached": r.tokens_cached}) for r in rs]
+        cost = sum(c for c in costs if c is not None) / max(len(rs), 1) if any(
+            c is not None for c in costs) else None
+        cost_txt = f", avg ${cost:.4f}/edit" if cost is not None else ""
+        lines += [f"## {m}: {passed}/{len(rs)} passed, median {lat:.1f}s{cost_txt}", "",
                   "| case | ok | s | llm calls | notes |", "|---|---|---|---|---|"]
         for r in rs:
             note = "; ".join(r.errors) if r.errors else r.summary
             lines.append(f"| {r.case} | {'✅' if r.ok else '❌'} | {r.seconds:.1f} | {r.llm_calls} "
                          f"| {note.replace('|', '/')[:160]} |")
         lines.append("")
-        print(f"{m}: {passed}/{len(rs)} passed, median {lat:.1f}s")
+        print(f"{m}: {passed}/{len(rs)} passed, median {lat:.1f}s{cost_txt}")
         for r in rs:
             if not r.ok:
                 print(f"   ✗ {r.case}: {'; '.join(r.errors)}")

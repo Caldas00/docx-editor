@@ -134,3 +134,26 @@ def test_empty_instruction(paths):
     src, out = paths
     svc, _ = service([])
     assert svc.start(src, "   ", out).status == "failed"
+
+
+def test_selection_is_given_to_the_planner(paths):
+    src, out = paths
+    svc, llm = service([submit(GOOD)])
+    res = svc.start(src, "change this to 7 of 12", out,
+                    selection={"text": "6 of 12", "blocks": ["t0.r2.c1.p0"]})
+    assert res.status == "done"
+    human = llm.seen[0][1].content
+    assert '<selection blocks="t0.r2.c1.p0">\n6 of 12\n</selection>' in human
+
+
+def test_token_usage_is_summed_over_calls(paths):
+    src, out = paths
+    first = call("search_document", query="session")
+    first.usage_metadata = {"input_tokens": 1000, "output_tokens": 20, "total_tokens": 1020,
+                            "input_token_details": {"cache_read": 0}}
+    second = submit(GOOD)
+    second.usage_metadata = {"input_tokens": 1100, "output_tokens": 80, "total_tokens": 1180,
+                             "input_token_details": {"cache_read": 1000}}
+    svc, _ = service([first, second])
+    res = svc.start(src, "x", out)
+    assert res.usage == {"input": 2100, "output": 100, "cached": 1000}

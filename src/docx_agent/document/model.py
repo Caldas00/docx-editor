@@ -22,13 +22,14 @@ markers, ``rPr``...) produces no pieces and is never touched.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal
 
 from lxml import etree
 
-from .ns import MC, M, W
+from .ns import MC, M, W, qn
 from .package import DocxPackage
 
 PieceKind = Literal["text", "protected"]
@@ -38,6 +39,80 @@ PieceKind = Literal["text", "protected"]
 REMOVABLE_LABELS = frozenset({"TAB", "BR", "NBHYPHEN"})
 
 IMAGE = "⟦IMAGE⟧"
+
+_WP_DOCPR = qn("wp:docPr")
+_WP_EXTENT = qn("wp:extent")
+_PIC = qn("pic:pic")
+_A_BLIP = qn("a:blip")
+_V_IMAGEDATA = qn("v:imagedata")
+_V_SHAPE = qn("v:shape")
+_EMU_PER_PX = 9525
+
+
+@dataclass(frozen=True)
+class ImageInfo:
+    """What the agent is told about a drawing: a stable reference and its size."""
+
+    ref: str | None  # e.g. "18" (from wp:docPr/@id); None when the drawing has no id
+    is_picture: bool  # a picture (deletable) vs. a shape/text box (always protected)
+    name: str
+    description: str
+    width_px: int | None
+    height_px: int | None
+
+    @property
+    def placeholder(self) -> str:
+        kind = "IMAGE" if self.is_picture else "SHAPE"
+        return f"⟦{kind}#{self.ref}⟧" if self.ref else f"⟦{kind}⟧"
+
+    @property
+    def label(self) -> str:
+        return "IMAGE" if self.is_picture else "SHAPE"
+
+    def describe(self) -> str:
+        size = f" {self.width_px}x{self.height_px}px" if self.width_px and self.height_px else ""
+        text = self.description or self.name
+        what = "" if self.is_picture else " shape"
+        return f"{self.placeholder}{what}{size}" + (f" {json.dumps(text, ensure_ascii=False)}"
+                                                     if text else "")
+
+
+def _pt_or_px(style: str, key: str) -> int | None:
+    m = re.search(rf"{key}:\s*([\d.]+)(pt|px|in)?", style)
+    if not m:
+        return None
+    value = float(m.group(1))
+    unit = m.group(2) or "px"
+    return round(value * {"pt": 96 / 72, "px": 1, "in": 96}[unit])
+
+
+def image_info(node: etree._Element) -> ImageInfo:
+    """Describe a w:drawing, w:pict or mc:AlternateContent run child."""
+    if node.tag == MC.AlternateContent:
+        choice = node.find(qn("mc:Choice"))
+        node = choice if choice is not None else node
+    docpr = node.find(".//" + _WP_DOCPR)
+    is_picture = any(node.find(".//" + t) is not None for t in (_PIC, _A_BLIP, _V_IMAGEDATA))
+    width = height = None
+    ext = node.find(".//" + _WP_EXTENT)
+    if ext is not None and (ext.get("cx") or "").isdigit() and (ext.get("cy") or "").isdigit():
+        width = round(int(ext.get("cx")) / _EMU_PER_PX)
+        height = round(int(ext.get("cy")) / _EMU_PER_PX)
+    ref = None
+    name = descr = ""
+    if docpr is not None:
+        raw = docpr.get("id") or ""
+        ref = re.sub(r"[^0-9A-Za-z_-]", "", raw) or None
+        name, descr = docpr.get("name") or "", docpr.get("descr") or docpr.get("title") or ""
+    else:
+        shape = node.find(".//" + _V_SHAPE)
+        if shape is not None:
+            style = shape.get("style") or ""
+            width, height = _pt_or_px(style, "width"), _pt_or_px(style, "height")
+            raw = shape.get("id") or ""
+            ref = re.sub(r"[^0-9A-Za-z_-]", "", raw) or None
+            name = shape.get("alt") or ""
+    return ImageInfo(ref, is_picture, name, descr, width, height)
 
 
 @dataclass
@@ -149,14 +224,14 @@ def paragraph_view(p: etree._Element) -> ParagraphView:
                     add("⟦PAGE BREAK⟧", "protected", run, child, container, "PAGE_BREAK")
             elif tag == W.noBreakHyphen:
                 add("-", "protected", run, child, container, prot or "NBHYPHEN")
-            elif tag in (W.drawing, W.pict):
-                add(IMAGE, "protected", run, child, container, "IMAGE")
-            elif tag == W.object:
+            elif tag in (W.drawing, W.pict) or (
+                    tag == MC.AlternateContent
+                    and child.find(".//" + W.drawing) is not None):
+                info = image_info(child)
+                add(info.placeholder, "protected", run, child, container,
+                    prot or info.label)
+            elif tag in (W.object, MC.AlternateContent):
                 add("⟦OBJECT⟧", "protected", run, child, container, "OBJECT")
-            elif tag == MC.AlternateContent:
-                is_img = child.find(".//" + W.drawing) is not None
-                add(IMAGE if is_img else "⟦OBJECT⟧", "protected", run, child, container,
-                    "IMAGE" if is_img else "OBJECT")
             elif tag == W.sym:
                 add("⟦SYMBOL⟧", "protected", run, child, container, "SYMBOL")
             elif tag == W.footnoteReference:
@@ -317,12 +392,51 @@ def _on(el: etree._Element | None) -> bool:
 
 def run_flags(run: etree._Element | None) -> tuple[bool, bool, bool]:
     """Directly applied (bold, italic, underline) on a run."""
-    if run is None:
-        return (False, False, False)
-    rpr = run.find(W.rPr)
+    props = run_props(run)
+    return (props["bold"], props["italic"], props["underline"])
+
+
+FORMAT_PROPS = ("bold", "italic", "underline", "strike", "color", "highlight", "font_size")
+
+
+def run_props(run: etree._Element | None) -> dict:
+    """Directly applied run formatting, normalised:
+    bold/italic/underline/strike -> bool, color -> "RRGGBB" | None,
+    highlight -> Word highlight name | None, font_size -> points | None."""
+    out = {"bold": False, "italic": False, "underline": False, "strike": False,
+           "color": None, "highlight": None, "font_size": None}
+    rpr = run.find(W.rPr) if run is not None else None
     if rpr is None:
-        return (False, False, False)
-    return (_on(rpr.find(W.b)), _on(rpr.find(W.i)), _on(rpr.find(W.u)))
+        return out
+    out["bold"] = _on(rpr.find(W.b))
+    out["italic"] = _on(rpr.find(W.i))
+    u = rpr.find(W.u)
+    out["underline"] = u is not None and u.get(W.val, "single") != "none"
+    out["strike"] = _on(rpr.find(W.strike))
+    color = rpr.find(W.color)
+    val = (color.get(W.val) or "") if color is not None else ""
+    if re.fullmatch(r"[0-9A-Fa-f]{6}", val):
+        out["color"] = val.upper()
+    hl = rpr.find(W.highlight)
+    if hl is not None and hl.get(W.val) not in (None, "none"):
+        out["highlight"] = hl.get(W.val)
+    sz = rpr.find(W.sz)
+    if sz is not None and (sz.get(W.val) or "").isdigit():
+        out["font_size"] = int(sz.get(W.val)) / 2
+    return out
+
+
+def _note_key(prop: str, value) -> str | None:
+    """Label of a formatting span in the outline, or None if not worth showing."""
+    if value in (None, False):
+        return None
+    if prop == "color":
+        return None if value in ("000000",) else f"color #{value}"
+    if prop == "highlight":
+        return f"highlight {value}"
+    if prop == "font_size":
+        return None  # sizes are noise in the outline; available through run formatting
+    return prop
 
 
 def formatting_notes(view: ParagraphView) -> list[str]:
@@ -340,41 +454,61 @@ def formatting_notes(view: ParagraphView) -> list[str]:
         else:
             cur_link = None
     link_notes = [f"link={json.dumps(t, ensure_ascii=False)}" for t in links if t.strip()]
-    texts = [p for p in view.pieces if p.kind == "text" and p.container.tag != W.hyperlink]
-    if not texts:
+    texts = [p for p in view.pieces if p.kind == "text"]
+    if not "".join(p.text for p in texts).strip():
         return link_notes
-    flags = [run_flags(p.run) for p in texts]
-    if len(set(flags)) <= 1:
-        f = flags[0]
-        whole = [n for n, on in zip(("bold", "italic", "underline"), f) if on]
-        return ([f"all {', '.join(whole)}"] if whole else []) + link_notes
-    names = ("bold", "italic", "underline")
-    for idx, name in enumerate(names):
-        cur = ""
-        for piece, f in zip(texts, flags):
-            if f[idx]:
-                cur += piece.text
-            elif cur:
-                spans.append((name, cur))
-                cur = ""
-        if cur:
-            spans.append((name, cur))
-    return [f"{name}={json.dumps(text, ensure_ascii=False)}" for name, text in spans
-            if text.strip()] + link_notes
+    props = [run_props(p.run) for p in texts]
+    whole: list[str] = []
+    for prop in FORMAT_PROPS:
+        keys = [_note_key(prop, pr[prop]) for pr in props]
+        visible = [(k, pc) for k, pc in zip(keys, texts) if pc.text.strip()]
+        if visible and all(k == visible[0][0] for k, _ in visible) and visible[0][0]:
+            # the whole paragraph has it (hyperlink underline/colour excluded from "all")
+            whole.append(visible[0][0])
+            continue
+        cur_key, cur = None, ""
+        for key, pc in zip(keys, texts):
+            if pc.container.tag == W.hyperlink and prop in ("underline", "color"):
+                key = None  # link styling is reported as link=
+            if key is not None and key == cur_key:
+                cur += pc.text
+                continue
+            if cur_key and cur.strip():
+                spans.append((cur_key, cur))
+            cur_key, cur = key, pc.text if key else ""
+        if cur_key and cur.strip():
+            spans.append((cur_key, cur))
+    notes = [f"all {', '.join(whole)}"] if whole else []
+    notes += [f"{name}={json.dumps(text, ensure_ascii=False)}" for name, text in spans]
+    return notes + link_notes
 
 
 def protected_notes(view: ParagraphView) -> list[str]:
     labels = []
+    images = []
     for p in view.pieces:
-        if p.kind == "protected" and p.label not in ("TAB", "BR", "NBHYPHEN", "IMAGE"):
-            labels.append(f"{p.label.lower() if p.label else 'protected'}={json.dumps(p.text, ensure_ascii=False)}")
+        if p.kind != "protected":
+            continue
+        if p.label in ("IMAGE", "SHAPE"):
+            images.append(image_info(p.node).describe())
+        elif p.label not in ("TAB", "BR", "NBHYPHEN"):
+            labels.append(f"{p.label.lower() if p.label else 'protected'}="
+                          f"{json.dumps(p.text, ensure_ascii=False)}")
+    if images:
+        labels.append("images: " + ", ".join(images))
     return labels
 
 
 def describe_block(pkg: DocxPackage, block: Block, max_text: int | None = None) -> str:
     indent = "  " * block.depth
     if block.kind == "table":
-        return f"{indent}[{block.id}] TABLE {block.rows} rows x {block.cols} cols"
+        headers = [i for i, tr in enumerate(block.element.findall(W.tr))
+                   if tr.find(qn("w:trPr")) is not None
+                   and tr.find(qn("w:trPr")).find(qn("w:tblHeader")) is not None]
+        head = f"; header row(s): {', '.join(f'{block.id}.r{i}' for i in headers)}" \
+            if headers else ""
+        return (f"{indent}[{block.id}] TABLE {block.rows} rows x {block.cols} cols "
+                f"(rows {block.id}.r0-{block.id}.r{max(block.rows - 1, 0)}{head})")
     view = paragraph_view(block.element)
     text = view.text
     if max_text is not None and len(text) > max_text:

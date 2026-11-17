@@ -317,10 +317,78 @@ def build_intake_form() -> bytes:
     return buf.getvalue()
 
 
+def _icon(number: int) -> bytes:
+    """A 24x24 numbered callout icon (rendered at 12x12 px in the document)."""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (24, 24), (255, 255, 255))
+    d = ImageDraw.Draw(img)
+    d.ellipse([1, 1, 22, 22], fill=(196, 64, 64))
+    d.text((8, 5), str(number), fill=(255, 255, 255))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def build_api_reference() -> bytes:
+    """A technical reference: code lines with small callout icons, coloured notes and a
+    long function table (the kind of document that needs row, colour and image edits)."""
+    doc = Document()
+    doc.styles["Normal"].font.name = "Calibri"
+    code = doc.styles.add_style("Code", 1)
+    code.font.name = "Consolas"
+    code.font.size = Pt(9)
+    doc.add_heading("Session Notes SDK - Reference", level=0)
+    p = doc.add_paragraph()
+    _split_runs(p, [("Note: ", {"bold": True, "color": "70AD47"}),
+                    ("this reference is generated from synthetic data.", {"color": "70AD47"})])
+    doc.add_heading("1. Getting started", level=1)
+    for i, line in enumerate(["#include <notes/sdk.hpp>", "using namespace notes;",
+                              "session_reader reader;", "reader.load(\"session.json\");"], 1):
+        cp = doc.add_paragraph(line.ljust(40), style="Code")
+        cp.add_run().add_picture(io.BytesIO(_icon(i)), width=Cm(0.32), height=Cm(0.32))
+    for i, text in enumerate(["Include the SDK header", "Use the SDK namespace",
+                              "Create a reader", "Load a session file"], 1):
+        cp = doc.add_paragraph()
+        cp.add_run().add_picture(io.BytesIO(_icon(i)), width=Cm(0.32), height=Cm(0.32))
+        cp.add_run(f" - {text}")
+    p = doc.add_paragraph()
+    _split_runs(p, [("Warning: ", {"bold": True, "color": "FF0000"}),
+                    ("load() throws if the file is not valid JSON.", {"color": "FF0000"})])
+    doc.add_heading("2. Session class", level=1)
+    rows = [("Return type", "Method", "Description"),
+            ("std::string", "get_client_id()", "Returns the synthetic client identifier."),
+            ("int", "get_number()", "Returns the session number."),
+            ("Date", "get_date()", "Returns the session date."),
+            ("void", "set_date(Date d)", "Sets the session date."),
+            ("Modality", "get_modality()", "Returns the therapy modality."),
+            ("void", "set_modality(Modality m)", "Sets the therapy modality."),
+            ("bool", "is_closed()", "Tells whether the note is signed and closed.")]
+    table = doc.add_table(rows=len(rows), cols=3)
+    table.style = "Table Grid"
+    for r, (row, data) in enumerate(zip(table.rows, rows)):
+        for cell, text in zip(row.cells, data):
+            cell.text = ""
+            run = cell.paragraphs[0].add_run(text)
+            run.bold = r == 0
+            if r == 0:
+                _shade(cell, "D9E2F3")
+    trpr = table.rows[0]._tr.get_or_add_trPr()
+    trpr.append(OxmlElement("w:tblHeader"))
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    _split_runs(p, [("Tip: ", {"bold": True, "color": "70AD47"}),
+                    ("prefer get_date() over parsing the raw JSON.", {})])
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 SAMPLES = {
     "session_note.docx": build_session_note,
     "referral_letter.docx": build_referral_letter,
     "intake_form.docx": build_intake_form,
+    "api_reference.docx": build_api_reference,
 }
 
 

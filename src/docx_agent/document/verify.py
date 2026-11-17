@@ -27,10 +27,16 @@ from dataclasses import dataclass, field
 
 from lxml import etree
 
-from .model import _on, paragraph_view
-from .ns import MC, W
-from .ops import EditPlan, _strip_revision_markup
-from .oracle import Expected, OracleError, StreamItem, document_stream, expected_document
+from .model import paragraph_view, run_props
+from .ns import MC, W, qn
+from .ops import (
+    EditPlan,
+    _strip_revision_markup,
+    new_cell_skeleton,
+    new_row_skeleton,
+    normalise_prop,
+)
+from .oracle import OracleError, StreamItem, document_stream, replay
 from .package import DocxError, DocxPackage
 
 
@@ -79,30 +85,25 @@ def _h(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
-def table_signature(tbl: etree._Element) -> str:
-    """Hash of a table's structure *without* the paragraphs/tables inside cells
-    (those are separate stream items)."""
-    parts: list[bytes] = []
-    for child in tbl:
-        if child.tag != W.tr:
-            parts.append(c14n(child))
-            continue
-        parts.append(b"<tr " + repr(sorted(child.attrib.items())).encode() + b">")
-        for cell in child:
-            if cell.tag != W.tc:
-                parts.append(c14n(cell))
-                continue
-            parts.append(b"<tc " + repr(sorted(cell.attrib.items())).encode() + b">")
-            for inner in cell:
-                if inner.tag not in (W.p, W.tbl):
-                    parts.append(c14n(inner))
+def _shallow_signature(el: etree._Element, skip: tuple[str, ...]) -> str:
+    """Hash of an element's attributes and of its children, except the children with
+    tags in ``skip`` (those are separate stream items: rows, cells, paragraphs)."""
+    parts = [repr(sorted(el.attrib.items())).encode()]
+    parts += [c14n(child) for child in el if child.tag not in skip]
     return _h(b"".join(parts))
 
 
 def item_signature(item: StreamItem) -> str:
-    if item.kind in ("tbl", "tbl_end"):
-        return item.kind + ":" + table_signature(item.element)
-    return item.kind + ":" + _h(c14n(item.element))
+    el = item.element
+    if item.kind == "tbl":
+        return "tbl:" + _shallow_signature(el, (W.tr,))
+    if item.kind == "tr":
+        return "tr:" + _shallow_signature(el, (W.tc,))
+    if item.kind == "tc":  # paragraphs, tables and other children are stream items
+        return "tc:" + _h(repr(sorted(el.attrib.items())).encode() + c14n(el.find(W.tcPr)))
+    if item.kind == "tbl_end":
+        return "tbl_end"
+    return item.kind + ":" + _h(c14n(el))
 
 
 def _container_sig(run: etree._Element | None, p: etree._Element) -> str:
@@ -114,7 +115,10 @@ def _container_sig(run: etree._Element | None, p: etree._Element) -> str:
     return "/".join(sig)
 
 
-_TOGGLE_TAGS = {"bold": W.b, "italic": W.i, "underline": W.u}
+# rPr children each requested property may change
+_PROP_TAGS = {"bold": [W.b], "italic": [W.i], "underline": [W.u], "strike": [W.strike],
+              "color": [W.color], "highlight": [W.highlight],
+              "font_size": [W.sz, qn("w:szCs")]}
 
 
 def _rpr_key(run: etree._Element | None, drop: set[str] | None = None) -> str:
@@ -131,6 +135,25 @@ def _rpr_key(run: etree._Element | None, drop: set[str] | None = None) -> str:
     if len(rpr) == 0 and not rpr.attrib:
         return ""  # an empty <w:rPr/> is the same as no rPr
     return _h(c14n(rpr))
+
+
+def _template_keys(tpl: etree._Element, drop: set[str]) -> set[str]:
+    """Run formatting a paragraph copied from ``tpl`` may have (ignoring ``drop`` tags)."""
+    keys = {_rpr_key(c.run, drop) for c in char_infos(tpl) if not c.protected}
+    if keys:
+        return keys
+    ppr = tpl.find(W.pPr)
+    mark = ppr.find(W.rPr) if ppr is not None else None
+    if mark is None:  # empty template: the paragraph-mark formatting is the reference
+        return {""}
+    return {_rpr_key_of(_strip_revision_markup(copy.deepcopy(mark)), drop)}
+
+
+def _rpr_key_of(rpr: etree._Element, drop: set[str]) -> str:
+    """Like _rpr_key, for a bare rPr element."""
+    holder = etree.Element(W.r)
+    holder.append(copy.deepcopy(rpr))
+    return _rpr_key(holder, drop)
 
 
 def _mark_key(mark_rpr: etree._Element) -> str:
@@ -160,16 +183,6 @@ def char_infos(p: etree._Element) -> list[CharInfo]:
     return out
 
 
-def _flag(run: etree._Element | None, prop: str) -> bool:
-    if run is None:
-        return False
-    rpr = run.find(W.rPr)
-    if rpr is None:
-        return False
-    el = rpr.find(_TOGGLE_TAGS[prop])
-    if prop == "underline":
-        return el is not None and el.get(W.val, "single") != "none"
-    return _on(el)
 
 
 # ------------------------------------------------------------------- counts
@@ -222,7 +235,8 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
 
     # 3. replay -------------------------------------------------------------
     try:
-        expected, deleted = expected_document(before, plan)
+        oracle = replay(before, plan)
+        expected = oracle.entries
     except OracleError as exc:
         report.add("Plan replays on plain text", False, str(exc))
         return report
@@ -282,10 +296,11 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
             n_chars += 1
             bc = b_chars[oc.origin]
             if oc.forced:
-                drop = {_TOGGLE_TAGS[k] for k in oc.forced}
+                drop = {t for k in oc.forced for t in _PROP_TAGS[k]}
                 same = (_rpr_key(bc.run, drop) + _container_sig(bc.run, b_el)
                         == _rpr_key(ac.run, drop) + _container_sig(ac.run, a_el))
-                flags_ok = all(_flag(ac.run, k) == v for k, v in oc.forced.items())
+                got = run_props(ac.run)
+                flags_ok = all(got[k] == normalise_prop(k, v) for k, v in oc.forced.items())
                 if not (same and flags_ok):
                     fmt_bad.append(f"{bid}: requested formatting not applied cleanly at {oc.ch!r}")
                     break
@@ -306,40 +321,51 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
         f"{n_chars} original characters checked" if not fmt_bad else "; ".join(fmt_bad[:3]),
     )
 
-    # 7. new paragraphs follow their template ------------------------------
-    templates = {e.block_id: e.before.element for e in expected_document_templates(before)}
+    # 7. new paragraphs / rows follow their template ------------------------
     new_bad: list[str] = []
     n_new = 0
     for exp, act in zip(expected, actual):
-        if exp.before is not None or exp.kind != "p":
+        if exp.before is not None:
+            continue
+        tpl = exp.template
+        if exp.kind == "tr":
+            if item_signature(act) != item_signature(StreamItem("tr", new_row_skeleton(tpl))):
+                new_bad.append("new row: row properties differ from its template row")
+            continue
+        if exp.kind == "tc":
+            if item_signature(act) != item_signature(StreamItem("tc", new_cell_skeleton(tpl))):
+                new_bad.append("new row: cell properties differ from the template cell")
             continue
         n_new += 1
-        tpl = templates.get(exp.template_id)
-        if tpl is None:
-            new_bad.append(f"template {exp.template_id} missing")
-            continue
         tpl_ppr = tpl.find(W.pPr)
         want = c14n(_strip_revision_markup(copy.deepcopy(tpl_ppr))) if tpl_ppr is not None else b""
         if c14n(act.element.find(W.pPr)) != want:
-            new_bad.append(f"new paragraph {exp.text[:30]!r}: style differs from {exp.template_id}")
+            new_bad.append(f"new paragraph {exp.text[:30]!r}: style differs from its template")
             continue
-        allowed = {_rpr_key(c.run) for c in char_infos(tpl) if not c.protected}
-        if not allowed:  # empty template: the paragraph-mark formatting is the reference
-            mark = tpl_ppr.find(W.rPr) if tpl_ppr is not None else None
-            allowed = {_mark_key(mark) if mark is not None else ""}
-        for c in char_infos(act.element):
-            if c.protected or _rpr_key(c.run) not in allowed:
+        plain = _template_keys(tpl, set())
+        for oc, c in zip(exp.chars or [], char_infos(act.element)):
+            if c.protected:
+                new_bad.append(f"new paragraph {exp.text[:30]!r}: unexpected content")
+                break
+            if oc.forced:  # e.g. insert_paragraph followed by format_text on it
+                drop = {t for k in oc.forced for t in _PROP_TAGS[k]}
+                got = run_props(c.run)
+                if _rpr_key(c.run, drop) not in _template_keys(tpl, drop) or any(
+                        got[k] != normalise_prop(k, v) for k, v in oc.forced.items()):
+                    new_bad.append(f"new paragraph {exp.text[:30]!r}: formatting not as planned")
+                    break
+            elif _rpr_key(c.run) not in plain:
                 new_bad.append(f"new paragraph {exp.text[:30]!r}: unexpected run formatting")
                 break
     report.add(
-        "New paragraphs copy their template's formatting", not new_bad,
+        "New paragraphs and rows copy their template's formatting", not new_bad,
         f"{n_new} new paragraph(s)" if not new_bad else "; ".join(new_bad[:3]),
     )
 
     # 8. element counts ----------------------------------------------------
     before_counts = count_elements(before.body)
     removed = {k: 0 for k in before_counts}
-    for e in _deleted_elements(before, deleted):
+    for e in oracle.removed:  # paragraphs, rows, tables and pictures the plan deletes
         for k, v in count_elements(e).items():
             removed[k] += v
     after_counts = count_elements(after.body)
@@ -367,18 +393,3 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
 def _last_block_tag(body: etree._Element) -> str | None:
     blocks = [c for c in body if c.tag in (W.p, W.tbl)]
     return blocks[-1].tag if blocks else None
-
-
-def expected_document_templates(pkg: DocxPackage) -> list[Expected]:
-    from .oracle import Oracle
-
-    return [e for e in Oracle(pkg).entries if e.kind == "p" and e.block_id]
-
-
-def _deleted_elements(pkg: DocxPackage, deleted: set[str]) -> list[etree._Element]:
-    if not deleted:
-        return []
-    from .model import build_index
-
-    idx = build_index(pkg)
-    return [b.element for b in idx.blocks if b.id in deleted]

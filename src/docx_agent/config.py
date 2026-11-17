@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DEFAULT_MODEL = "gpt-5.5"
+DEFAULT_MODEL = "gpt-6-luna"
 
 
 @dataclass(frozen=True)

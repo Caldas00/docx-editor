@@ -39,10 +39,14 @@ def test_edit_flow_with_redline_download_and_undo(client):
     s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
     assert s["version"] == 0 and "Session Progress Note" in s["preview_html"]
 
-    r = client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "session 7"}).json()
-    assert r["outcome"]["status"] == "done"
-    assert r["outcome"]["verification"]["passed"]
-    assert r["session"]["version"] == 1
+    r = client.post(f"/api/sessions/{s['id']}/edit",
+                    json={"instruction": "session 7",
+                          "selection": {"text": "6 of 12", "blocks": ["t0.r2.c1.p0"]}}).json()
+    assert r["turn"]["status"] == "done"
+    assert r["turn"]["verification"]["passed"]
+    assert r["turn"]["selection"]["blocks"] == ["t0.r2.c1.p0"]
+    assert r["turn"]["model"] and "cost" in r["turn"]
+    assert r["session"]["version"] == 1 and r["session"]["turns"][0]["version"] == 1
     assert "<del>6</del><ins>7</ins>" in r["session"]["redline_html"]
 
     d = client.get(f"/api/sessions/{s['id']}/download")
@@ -52,7 +56,7 @@ def test_edit_flow_with_redline_download_and_undo(client):
     assert paragraph_view(build_index(pkg).get("t0.r2.c1.p0").element).text == "7 of 12"
 
     u = client.post(f"/api/sessions/{s['id']}/undo").json()
-    assert u["version"] == 0
+    assert u["version"] == 0 and u["turns"][0]["undone"] is True
     assert client.post(f"/api/sessions/{s['id']}/undo").status_code == 409
 
 
@@ -60,17 +64,19 @@ def test_clarification_round_trip(client):
     use_script(call("ask_clarification", question="Which one?", options=["A", "B"]), submit(GOOD))
     s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
     r = client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "x"}).json()
-    assert r["outcome"]["status"] == "needs_clarification"
-    assert r["session"]["pending"]["options"] == ["A", "B"]
+    assert r["turn"]["status"] == "needs_clarification"
+    assert r["turn"]["options"] == ["A", "B"] and r["session"]["pending"] is True
     r2 = client.post(f"/api/sessions/{s['id']}/answer", json={"answer": "A"}).json()
-    assert r2["outcome"]["status"] == "done" and r2["session"]["version"] == 1
+    assert r2["turn"]["status"] == "done" and r2["session"]["version"] == 1
+    assert r2["turn"]["answers"] == [{"question": "Which one?", "answer": "A"}]
 
 
 def test_decline_keeps_version(client):
     use_script(call("cannot_complete", reason="Not possible."))
     s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
     r = client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "x"}).json()
-    assert r["outcome"]["status"] == "declined" and r["session"]["version"] == 0
+    assert r["turn"]["status"] == "declined" and r["session"]["version"] == 0
+    assert len(r["session"]["turns"]) == 1
 
 
 def test_upload_validation(client, session_note_bytes):
@@ -89,3 +95,11 @@ def test_upload_validation(client, session_note_bytes):
 def test_unknown_session_and_sample(client):
     assert client.get("/api/sessions/nope").status_code == 404
     assert client.post("/api/sessions/sample", json={"name": "../secret"}).status_code == 404
+
+
+def test_new_instruction_abandons_pending_question(client):
+    use_script(call("ask_clarification", question="Which?", options=["A"]), submit(GOOD))
+    s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
+    client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "x"})
+    r = client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "y"}).json()
+    assert [t["status"] for t in r["session"]["turns"]] == ["abandoned", "done"]

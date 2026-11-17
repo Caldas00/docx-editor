@@ -1,5 +1,5 @@
 {
-  "summary": "Updated the addressee, anxiety status, and removed “persistent” from the body text.",
+  "summary": "Address the letter to Dr. Rui Almeida, change the anxiety status to Mild, and remove “persistent.”",
   "operations": [
     {
       "op": "replace_text",

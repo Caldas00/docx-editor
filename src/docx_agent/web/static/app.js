@@ -1,17 +1,37 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { session: null, view: "redline", viewing: null, samples: [], busy: false };
+const state = {
+  session: null,   // last session payload from the server
+  view: "redline", // "redline" | "clean"
+  selection: null, // {text, blocks} the user pointed at
+  busy: false,
+  samples: [],
+  expanded: new Set(), // turn indexes whose change list is expanded
+};
 
-const OP_LABEL = {
-  replace_text: "replace", delete_text: "delete", insert_text: "insert",
-  insert_paragraph: "new paragraph", delete_paragraph: "remove paragraph", format_text: "format",
+const OPS = {
+  replace_text: ["edit", "replace"], delete_text: ["remove", "delete"], insert_text: ["add", "insert"],
+  insert_paragraph: ["add", "new paragraph"], delete_paragraph: ["remove", "paragraph removed"],
+  format_text: ["style", "format"], restyle_text: ["style", "restyle"],
+  delete_images: ["remove", "pictures removed"], delete_table_row: ["remove", "row removed"],
+  insert_table_row: ["add", "new row"], delete_table: ["remove", "table removed"],
+};
+
+const ICON = {
+  ok: '<svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.2 14.2-4-4 1.4-1.4 2.6 2.6 5.6-5.6 1.4 1.4-7 7z"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>',
+  bad: '<svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm4.3 12.9-1.4 1.4L12 13.4l-2.9 2.9-1.4-1.4 2.9-2.9-2.9-2.9 1.4-1.4 2.9 2.9 2.9-2.9 1.4 1.4-2.9 2.9 2.9 2.9z"/></svg>',
+  ask: '<svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M11 18h2v-2h-2v2zm1-16a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0-14a4 4 0 0 0-4 4h2a2 2 0 1 1 4 0c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5a4 4 0 0 0-4-4z"/></svg>',
+  undo: '<svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.96 7.96 0 0 1 12.5 10.5c3.54 0 6.55 2.31 7.6 5.5l2.37-.78A10.5 10.5 0 0 0 12.5 8z"/></svg>',
+  chev: '<svg class="chev" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="m9 6 6 6-6 6-1.4-1.4 4.6-4.6-4.6-4.6z"/></svg>',
+  tick: '<svg class="ic-ok" viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="m9 16.2-4.2-4.2-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>',
+  cross: '<svg class="ic-bad" viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg>',
 };
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-
 function toast(msg, ms = 4200) {
   const t = $("toast");
   t.textContent = msg;
@@ -19,7 +39,6 @@ function toast(msg, ms = 4200) {
   clearTimeout(toast._t);
   toast._t = setTimeout(() => (t.hidden = true), ms);
 }
-
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
   let body = null;
@@ -27,81 +46,66 @@ async function api(path, opts = {}) {
   if (!res.ok) throw new Error((body && body.detail) || `Request failed (${res.status})`);
   return body;
 }
-const post = (path, data) => api(path, {
-  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data ?? {}),
-});
+const post = (path, data) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data ?? {}) });
 
-/* ------------------------------------------------------------------ boot */
+/* =================================================================== boot */
 async function boot() {
   try {
     const cfg = await api("/api/config");
-    $("model-pill").textContent = `model ${cfg.model}`;
+    $("model-pill").textContent = cfg.model;
     state.samples = cfg.samples;
-    renderSamples();
+    $("samples").innerHTML = '<span>or try a sample:</span>' + cfg.samples.map((s) =>
+      `<button type="button" data-name="${esc(s.name)}">${esc(s.title)}</button>`).join("");
+    $("samples").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => openSample(b.dataset.name)));
     if (!cfg.has_api_key) toast("OPENAI_API_KEY is not set - edits will fail.", 8000);
   } catch (e) { toast(e.message); }
   const params = new URLSearchParams(location.search);
   if (params.get("session")) {
     const v = params.get("version");
     try {
-      setSession(await api(`/api/sessions/${encodeURIComponent(params.get("session"))}` + (v ? `?version=${Number(v)}` : "")));
-    } catch { history.replaceState(null, "", "/"); }
+      showSession(await api(`/api/sessions/${encodeURIComponent(params.get("session"))}` + (v ? `?version=${Number(v)}` : "")));
+    } catch { goHome(); }
   }
 }
 
-function renderSamples() {
-  $("samples").innerHTML = state.samples.map((s) => `
-    <button class="sample" data-name="${esc(s.name)}">
-      <div class="s-icon">DOCX</div>
-      <div class="s-title">${esc(s.title)}</div>
-      <div class="s-desc">${esc(s.description)}</div>
-    </button>`).join("");
-  $("samples").querySelectorAll(".sample").forEach((b) =>
-    b.addEventListener("click", () => openSample(b.dataset.name)));
-}
-
-/* ------------------------------------------------------------- documents */
+/* ============================================================== documents */
 async function openSample(name) {
-  try { setSession(await post("/api/sessions/sample", { name })); } catch (e) { toast(e.message); }
+  try { state.view = "redline"; showSession(await post("/api/sessions/sample", { name })); } catch (e) { toast(e.message); }
 }
-
 async function uploadFile(file) {
   if (!file) return;
-  if (!file.name.toLowerCase().endsWith(".docx")) return toast("Please choose a .docx file.");
+  if (!/\.docx$/i.test(file.name)) return toast("Please choose a .docx file.");
   const fd = new FormData();
   fd.append("file", file);
-  try { setSession(await api("/api/sessions/upload", { method: "POST", body: fd })); }
+  try { state.view = "redline"; showSession(await api("/api/sessions/upload", { method: "POST", body: fd })); }
   catch (e) { toast(e.message); }
+  $("file-input").value = "";
+}
+function goHome() {
+  state.session = null;
+  clearSelection();
+  history.replaceState(null, "", "/");
+  document.body.classList.add("no-doc");
+  $("home").hidden = false;
+  $("workspace").hidden = true;
 }
 
-function setSession(s, { keepResult = false } = {}) {
+function showSession(s) {
+  const switched = !state.session || state.session.id !== s.id;
   state.session = s;
-  state.viewing = s.version;
-  $("empty").hidden = true;
-  $("toolbar").hidden = false;
-  $("paper-wrap").hidden = false;
-  $("change-doc").hidden = false;
+  if (switched) { clearSelection(); state.expanded.clear(); }
+  document.body.classList.remove("no-doc");
+  $("home").hidden = true;
+  $("workspace").hidden = false;
   $("doc-name").textContent = s.name;
-  $("instruction").disabled = false;
-  $("apply-btn").disabled = false;
-  const sample = state.samples.find((x) => x.name === s.name);
-  $("chips").innerHTML = (sample ? sample.suggestions : []).map((t) =>
-    `<button class="chip" type="button">${esc(t)}</button>`).join("");
-  $("chips").querySelectorAll(".chip").forEach((c) => c.addEventListener("click", () => {
-    $("instruction").value = c.textContent;
-    $("instruction").focus();
-  }));
-  if (!keepResult) {
-    $("clarify").hidden = true;
-    if (s.outcome) renderResult(s.outcome); else $("result").hidden = true;
-  }
   history.replaceState(null, "", `?session=${s.id}${s.version !== s.latest ? `&version=${s.version}` : ""}`);
-  if (s.pending) showClarification(s.pending);
-  renderDocument(s);
-  renderHistory();
+  renderDocument();
+  renderChat();
+  updateComposer();
 }
 
-function renderDocument(s) {
+function renderDocument() {
+  const s = state.session;
   const hasRedline = Boolean(s.redline_html);
   const view = hasRedline ? state.view : "clean";
   $("view-redline").disabled = !hasRedline;
@@ -111,217 +115,293 @@ function renderDocument(s) {
   const paper = $("paper");
   paper.innerHTML = view === "redline" ? s.redline_html : s.preview_html;
   paper.classList.toggle("clean", view === "clean");
-  $("version-pill").textContent = s.version === 0 ? "original" :
-    `version ${s.version}${s.version === s.latest ? " · latest" : ""}`;
-  const dl = $("download-btn");
-  dl.href = `/api/sessions/${s.id}/download?version=${s.version}`;
+  $("version-pill").textContent = s.version === 0 ? "original" : `version ${s.version}`;
+  $("old-version").hidden = s.version === s.latest;
+  $("old-version-text").textContent = `You are viewing version ${s.version} of ${s.latest}. New edits apply to the latest version.`;
+  $("download-btn").href = `/api/sessions/${s.id}/download?version=${s.version}`;
   $("undo-btn").disabled = s.latest === 0 || state.busy;
-}
-
-function renderHistory() {
-  const s = state.session;
-  const items = [{ version: 0, instruction: "Original document", summary: "", seconds: null }, ...s.history];
-  $("history-card").hidden = s.history.length === 0;
-  $("history").innerHTML = items.slice().reverse().map((h) => `
-    <li><button data-v="${h.version}" class="${h.version === state.viewing ? "active" : ""}"
-         title="${esc(h.summary || h.instruction)}">
-      <span class="v">v${h.version}</span>
-      <span class="h-text">${esc(h.instruction)}</span>
-      <span class="h-meta">${h.seconds != null ? h.seconds + "s" : ""}</span>
-    </button></li>`).join("");
-  $("history").querySelectorAll("button").forEach((b) =>
-    b.addEventListener("click", () => viewVersion(Number(b.dataset.v))));
+  markSelection();
 }
 
 async function viewVersion(v) {
   try {
-    const s = await api(`/api/sessions/${state.session.id}?version=${v}`);
-    state.session = { ...s };
-    state.viewing = v;
-    renderDocument(s);
-    renderHistory();
-    if (s.outcome) renderResult(s.outcome); else $("result").hidden = true;
+    showSession(await api(`/api/sessions/${state.session.id}?version=${v}`));
   } catch (e) { toast(e.message); }
 }
 
-/* ------------------------------------------------------------------ edit */
-function setBusy(on) {
-  state.busy = on;
-  const btn = $("apply-btn");
-  btn.classList.toggle("loading", on);
-  btn.disabled = on;
-  $("instruction").disabled = on;
-  $("answer-btn").disabled = on;
-  $("undo-btn").disabled = on || !state.session || state.session.latest === 0;
-  $("working").hidden = !on;
-  clearInterval(setBusy._t);
-  if (on) {
-    const t0 = performance.now();
-    $("elapsed").textContent = "0.0s";
-    setBusy._t = setInterval(() => {
-      $("elapsed").textContent = ((performance.now() - t0) / 1000).toFixed(1) + "s";
-    }, 100);
-  }
-}
-
-async function applyEdit() {
-  const instruction = $("instruction").value.trim();
-  if (!instruction || state.busy || !state.session) return;
-  $("result").hidden = true;
-  $("clarify").hidden = true;
-  setBusy(true);
-  try {
-    const res = await post(`/api/sessions/${state.session.id}/edit`, { instruction });
-    handleResult(res);
-  } catch (e) { toast(e.message); } finally { setBusy(false); }
-}
-
-async function sendAnswer(answer) {
-  answer = (answer ?? $("answer-input").value).trim();
-  if (!answer || state.busy) return;
-  $("clarify").hidden = true;
-  setBusy(true);
-  try {
-    const res = await post(`/api/sessions/${state.session.id}/answer`, { answer });
-    handleResult(res);
-  } catch (e) { toast(e.message); $("clarify").hidden = false; } finally { setBusy(false); }
-}
-
-function handleResult({ outcome, session }) {
-  if (outcome.status === "done") state.view = "redline";
-  setSession(session, { keepResult: true });
-  if (outcome.status === "done") scrollToFirstChange();
-  if (outcome.status === "needs_clarification") {
-    $("result").hidden = true;
-    showClarification(outcome);
+/* ================================================================ selection */
+function captureSelection() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !state.session) return;
+  const range = sel.getRangeAt(0);
+  const paper = $("paper");
+  if (!paper.contains(range.commonAncestorContainer)) return;
+  const text = sel.toString().replace(/\s+\n/g, "\n").trim();
+  if (!text) return;
+  if (state.session.version !== state.session.latest) {
+    toast("Selections work on the latest version - click “Back to latest”.");
     return;
   }
-  $("clarify").hidden = true;
-  if (outcome.status === "done") $("instruction").value = "";
-  renderResult(outcome);
+  const paras = [...paper.querySelectorAll(".para[data-bid]")].filter((el) => range.intersectsNode(el));
+  const rows = [...paper.querySelectorAll("tr[data-row]")].filter((el) => range.intersectsNode(el));
+  const blocks = paras.map((el) => el.dataset.bid);
+  if (rows.length && paras.length > 1) blocks.push(...rows.map((el) => el.dataset.row));
+  state.selection = { text: text.slice(0, 4000), blocks: [...new Set(blocks)].slice(0, 60) };
+  updateComposer();
+  markSelection();
+}
+function clearSelection() {
+  state.selection = null;
+  updateComposer();
+  markSelection();
+}
+function markSelection() {
+  const paper = $("paper");
+  paper.querySelectorAll(".sel-ref").forEach((el) => el.classList.remove("sel-ref"));
+  if (!state.selection) return;
+  state.selection.blocks.forEach((id) => {
+    const el = paper.querySelector(`[data-bid="${CSS.escape(id)}"]`);
+    if (el && el.classList.contains("para")) el.classList.add("sel-ref");
+  });
 }
 
-function scrollToFirstChange() {
-  const first = $("paper").querySelector("ins, del, .fmt-changed, .block-ins, .block-del");
-  if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
-}
-
-function showClarification(o) {
-  $("question").textContent = o.question;
-  $("options").innerHTML = (o.options || []).map((opt) =>
-    `<button type="button">${esc(opt)}</button>`).join("");
-  $("options").querySelectorAll("button").forEach((b) =>
-    b.addEventListener("click", () => sendAnswer(b.textContent)));
-  $("answer-input").value = "";
-  $("clarify").hidden = false;
-}
-
-const ICON = {
-  ok: '<svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.2 14.2-4-4 1.4-1.4 2.6 2.6 5.6-5.6 1.4 1.4-7 7z"/></svg>',
-  warn: '<svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>',
-  bad: '<svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm4.3 12.9-1.4 1.4L12 13.4l-2.9 2.9-1.4-1.4 2.9-2.9-2.9-2.9 1.4-1.4 2.9 2.9 2.9-2.9 1.4 1.4-2.9 2.9 2.9 2.9z"/></svg>',
-  tick: '<svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="m9 16.2-4.2-4.2-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>',
-  cross: '<svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg>',
-};
-
-function renderResult(o) {
-  const kind = { done: "ok", declined: "warn" }[o.status] || "bad";
-  const title = { done: "Edit applied", declined: "Not applied" }[o.status] || "Could not apply the edit";
-  const meta = `${o.seconds}s · ${o.llm_calls} LLM call${o.llm_calls === 1 ? "" : "s"}`;
-  let html = `<div class="status-head ${kind}">${ICON[kind]}<span>${title}</span><span class="meta">${meta}</span></div>
-    <p class="summary">${esc(o.message)}</p>`;
-
-  if (o.status === "done" && o.changes.length) {
-    html += `<div class="section-label">Changes</div><ul class="changes">` + o.changes.map((c) => {
-      let text = "";
-      if (c.op === "delete_paragraph") text = `<del>${esc(c.before)}</del>`;
-      else if (c.op === "insert_paragraph") text = `<ins>${esc(c.after)}</ins>`;
-      else if (c.op === "format_text") text = esc(c.after);
-      else text = inlineDiff(c.before || "", c.after || "");
-      return `<li><span class="op ${c.op}">${OP_LABEL[c.op] || c.op}</span><span class="blk">${esc(c.block_id)}</span>
-        <div class="change-text">${text}</div></li>`;
-    }).join("") + `</ul>`;
+/* ===================================================================== chat */
+function renderChat(pendingInstruction) {
+  const s = state.session;
+  const box = $("messages");
+  const parts = [];
+  if (!s.turns.length && !pendingInstruction) {
+    parts.push(`<div class="empty-chat">
+      <h3>What should change?</h3>
+      <p>Describe an edit in plain language, or select text in the document first and say what to do with it.</p>
+      <div class="suggestions">${s.suggestions.map((t) => `<button type="button">${esc(t)}</button>`).join("")}</div>
+    </div>`);
   }
-
-  if (o.verification) {
-    const v = o.verification;
-    const n = v.checks.filter((c) => c.passed).length;
-    html += `<div class="section-label">Integrity verification</div>
-      <div class="verdict ${v.passed ? "" : "bad"}">${v.passed ? ICON.ok : ICON.bad}
-        ${v.passed ? `All ${n} checks passed` : `${v.checks.length - n} check(s) failed - nothing was saved`}</div>
-      <ul class="checks">` + v.checks.map((c) => `
-        <li><span class="ic ${c.passed ? "ok" : "bad"}">${c.passed ? ICON.tick : ICON.cross}</span>
-          <span>${esc(c.name)}${c.detail ? `<span class="detail">${esc(c.detail)}</span>` : ""}</span></li>`).join("") + `</ul>`;
+  s.turns.forEach((t) => parts.push(...turnHtml(t)));
+  if (pendingInstruction) {
+    parts.push(userBubble(pendingInstruction.text, pendingInstruction.selection));
+    parts.push(`<div class="msg agent"><span class="typing"><i></i><i></i><i></i></span><span class="working-text" id="elapsed">0.0s</span></div>`);
   }
-  if (o.plan) {
-    html += `<details class="plan"><summary>Edit plan (JSON)</summary><pre>${esc(JSON.stringify(o.plan, null, 2))}</pre></details>`;
-  }
-  $("result").innerHTML = html;
-  $("result").hidden = false;
+  box.innerHTML = parts.join("");
+  box.querySelectorAll(".suggestions button").forEach((b) => b.addEventListener("click", () => {
+    $("instruction").value = b.textContent;
+    autoGrow();
+    $("instruction").focus();
+  }));
+  box.querySelectorAll("[data-answer]").forEach((b) => b.addEventListener("click", () => sendAnswer(b.dataset.answer)));
+  box.querySelectorAll("[data-version]").forEach((b) => b.addEventListener("click", () => viewVersion(Number(b.dataset.version))));
+  box.querySelectorAll("[data-undo]").forEach((b) => b.addEventListener("click", undo));
+  box.querySelectorAll("[data-more]").forEach((b) => b.addEventListener("click", () => {
+    state.expanded.add(Number(b.dataset.more));
+    renderChat();
+  }));
+  box.scrollTop = box.scrollHeight;
 }
 
-/** Word-level diff for the change list (common prefix/suffix trim, good enough for one edit). */
+function userBubble(text, selection) {
+  const quote = selection ? `<span class="quote"><b>Selection</b> · ${esc(selection.text.length > 140 ? selection.text.slice(0, 140) + "…" : selection.text)}</span>` : "";
+  return `<div class="msg user">${quote}${esc(text)}</div>`;
+}
+
+function turnHtml(t) {
+  const out = [userBubble(t.instruction, t.selection)];
+  for (const qa of t.answers || []) {
+    out.push(`<div class="msg agent"><div class="agent-top"><span class="status neutral">${ICON.ask} Question</span></div><div class="question">${esc(qa.question)}</div></div>`);
+    out.push(userBubble(qa.answer));
+  }
+  const s = state.session;
+  const meta = [t.seconds != null ? `${t.seconds}s` : null, t.cost != null ? `$${t.cost < 0.001 ? t.cost.toFixed(5) : t.cost.toFixed(4)}` : null].filter(Boolean).join(" · ");
+  const metaHtml = meta ? `<span class="meta" title="${esc(t.model || "")} · ${t.llm_calls || 0} LLM call(s) · ${(t.usage && t.usage.input) || 0} input tokens">${meta}</span>` : "";
+
+  if (t.status === "needs_clarification") {
+    const live = s.pending && t.index === s.turns.length - 1;
+    out.push(`<div class="msg agent">
+      <div class="agent-top"><span class="status warn">${ICON.ask} Which one did you mean?</span>${metaHtml}</div>
+      <div class="question">${esc(t.question)}</div>
+      <div class="options">${(t.options || []).map((o) => `<button type="button" data-answer="${esc(o)}" ${live ? "" : "disabled"}>${esc(o)}</button>`).join("")}</div>
+      ${live ? '<div class="hint-line">Pick an option or type your answer below.</div>' : ""}
+    </div>`);
+    return out;
+  }
+  if (t.status === "abandoned") {
+    out.push(`<div class="msg agent muted"><div class="agent-top"><span class="status neutral">Question left unanswered</span></div></div>`);
+    return out;
+  }
+  if (t.status === "declined" || t.status === "failed") {
+    const cls = t.status === "declined" ? "warn" : "bad";
+    const title = t.status === "declined" ? "Not applied" : "Could not apply";
+    out.push(`<div class="msg agent">
+      <div class="agent-top"><span class="status ${cls}">${ICON[cls]} ${title}</span>${metaHtml}</div>
+      <div class="agent-text">${esc(t.message)}</div>${checksHtml(t)}</div>`);
+    return out;
+  }
+  if (t.status !== "done") return out;
+
+  const isViewing = s.version === t.version;
+  const canUndo = !t.undone && t.version === s.latest && !state.busy;
+  const changes = t.changes || [];
+  const limit = state.expanded.has(t.index) ? changes.length : 4;
+  const list = changes.slice(0, limit).map(changeHtml).join("");
+  const more = changes.length > limit ? `<button type="button" class="more-btn" data-more="${t.index}">Show ${changes.length - limit} more</button>` : "";
+  out.push(`<div class="msg agent ${t.undone ? "muted" : ""}">
+    <div class="agent-top">
+      <span class="status ${t.undone ? "neutral" : "ok"}">${t.undone ? ICON.undo + " Undone" : ICON.ok + " Applied"}</span>
+      ${t.version != null && !t.undone ? `<button type="button" class="vlink ${isViewing ? "active" : ""}" data-version="${t.version}" title="Show this version">v${t.version}</button>` : ""}
+      ${metaHtml}
+    </div>
+    <div class="agent-text">${esc(t.message)}</div>
+    <ul class="changes">${list}</ul>${more}
+    ${checksHtml(t)}
+    ${t.plan ? `<details class="plan"><summary>${ICON.chev} Edit plan</summary><pre>${esc(JSON.stringify(t.plan, null, 2))}</pre></details>` : ""}
+    ${canUndo ? `<div class="card-actions"><button type="button" class="link-btn" data-undo>Undo this edit</button></div>` : ""}
+  </div>`);
+  return out;
+}
+
+function checksHtml(t) {
+  const v = t.verification;
+  if (!v) return "";
+  const n = v.checks.filter((c) => c.passed).length;
+  const label = v.passed ? `Verified · ${n} integrity checks passed` : `${v.checks.length - n} integrity check(s) failed - nothing saved`;
+  return `<details class="checks"><summary class="${v.passed ? "ok" : "bad"}">${ICON.chev} ${label}</summary>
+    <ul class="check-list">${v.checks.map((c) => `<li>${c.passed ? ICON.tick : ICON.cross}<span>${esc(c.name)}${c.detail ? `<span class="d">${esc(c.detail)}</span>` : ""}</span></li>`).join("")}</ul></details>`;
+}
+
+function changeHtml(c) {
+  const [cls, label] = OPS[c.op] || ["edit", c.op];
+  let text;
+  if (c.before == null) text = `<ins>${esc(c.after)}</ins>`;
+  else if (c.after == null) text = `<del>${esc(c.before)}</del>`;
+  else if (c.op === "format_text" || c.op === "restyle_text") text = esc(c.after.length > 160 ? c.after.slice(0, 160) + "…" : c.after);
+  else text = inlineDiff(c.before, c.after);
+  return `<li><span class="op ${cls}">${esc(label)}</span>${text}</li>`;
+}
+
+/** Word-level diff for one change (common prefix/suffix trimmed, short context kept). */
 function inlineDiff(a, b) {
   const ta = a.split(/(\s+)/), tb = b.split(/(\s+)/);
   let i = 0;
   while (i < ta.length && i < tb.length && ta[i] === tb[i]) i++;
   let j = 0;
   while (j < ta.length - i && j < tb.length - i && ta[ta.length - 1 - j] === tb[tb.length - 1 - j]) j++;
-  // keep ~60 chars of context on each side, cut at a word boundary
-  const ctx = (arr) => {
-    const s = arr.join("");
-    return s.length > 60 ? "…" + s.slice(-60).replace(/^\S*\s/, " ") : s;
-  };
-  const ctxEnd = (arr) => {
-    const s = arr.join("");
-    return s.length > 60 ? s.slice(0, 60).replace(/\s\S*$/, " ") + "…" : s;
-  };
-  const pre = ctx(ta.slice(0, i));
-  const delPart = ta.slice(i, ta.length - j).join("");
-  const insPart = tb.slice(i, tb.length - j).join("");
-  const post = ctxEnd(ta.slice(ta.length - j));
-  return esc(pre) + (delPart ? `<del>${esc(delPart)}</del>` : "") +
-    (insPart ? `<ins>${esc(insPart)}</ins>` : "") + esc(post);
+  const pre = ta.slice(0, i).join(""), post = ta.slice(ta.length - j).join("");
+  const preT = pre.length > 50 ? "…" + pre.slice(-50).replace(/^\S*\s/, " ") : pre;
+  const postT = post.length > 50 ? post.slice(0, 50).replace(/\s\S*$/, " ") + "…" : post;
+  const d = ta.slice(i, ta.length - j).join(""), n = tb.slice(i, tb.length - j).join("");
+  return esc(preT) + (d ? `<del>${esc(d)}</del>` : "") + (n ? `<ins>${esc(n)}</ins>` : "") + esc(postT);
 }
 
-/* ---------------------------------------------------------------- events */
-$("apply-btn").addEventListener("click", applyEdit);
-$("instruction").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); applyEdit(); }
-});
-$("answer-btn").addEventListener("click", () => sendAnswer());
-$("answer-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendAnswer(); });
-$("view-redline").addEventListener("click", () => { state.view = "redline"; renderDocument(state.session); });
-$("view-clean").addEventListener("click", () => { state.view = "clean"; renderDocument(state.session); });
-$("undo-btn").addEventListener("click", async () => {
+/* ================================================================ composer */
+function updateComposer() {
+  const s = state.session;
+  const chip = $("sel-chip");
+  if (state.selection) {
+    const t = state.selection.text;
+    $("sel-text").textContent = `Selected: “${t.length > 90 ? t.slice(0, 90) + "…" : t}”`;
+    $("sel-text").title = `${t}\n\nBlocks: ${state.selection.blocks.join(", ")}`;
+    chip.hidden = false;
+  } else chip.hidden = true;
+  const answering = s && s.pending;
+  $("instruction").placeholder = answering ? "Type your answer…" : state.selection ? "What should happen to the selection?" : "Describe the change…";
+  $("send-btn").disabled = state.busy;
+  $("instruction").disabled = state.busy;
+}
+
+function autoGrow() {
+  const ta = $("instruction");
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+}
+
+function setBusy(on, pending) {
+  state.busy = on;
+  clearInterval(setBusy._t);
+  if (on) {
+    renderChat(pending);
+    const t0 = performance.now();
+    setBusy._t = setInterval(() => {
+      const el = $("elapsed");
+      if (el) el.textContent = ((performance.now() - t0) / 1000).toFixed(1) + "s";
+    }, 100);
+  }
+  updateComposer();
+  $("undo-btn").disabled = on || !state.session || state.session.latest === 0;
+}
+
+async function submit() {
+  const text = $("instruction").value.trim();
+  if (!text || state.busy || !state.session) return;
+  if (state.session.pending) return sendAnswer(text);
+  const selection = state.selection;
+  $("instruction").value = "";
+  autoGrow();
+  setBusy(true, { text, selection });
   try {
-    const s = await post(`/api/sessions/${state.session.id}/undo`);
-    $("result").hidden = true;
-    setSession(s);
-    toast("Last edit reverted.");
+    const res = await post(`/api/sessions/${state.session.id}/edit`, { instruction: text, selection });
+    clearSelection();
+    if (res.turn.status === "done") state.view = "redline";
+    state.busy = false;
+    showSession(res.session);
+    if (res.turn.status === "done") scrollToFirstChange();
+  } catch (e) {
+    toast(e.message);
+    $("instruction").value = text;
+  } finally { setBusy(false); }
+}
+
+async function sendAnswer(answer) {
+  if (!answer || state.busy) return;
+  $("instruction").value = "";
+  autoGrow();
+  setBusy(true, { text: answer });
+  try {
+    const res = await post(`/api/sessions/${state.session.id}/answer`, { answer });
+    if (res.turn.status === "done") state.view = "redline";
+    state.busy = false;
+    showSession(res.session);
+    if (res.turn.status === "done") scrollToFirstChange();
+  } catch (e) { toast(e.message); } finally { setBusy(false); }
+}
+
+async function undo() {
+  try {
+    showSession(await post(`/api/sessions/${state.session.id}/undo`));
+    toast("Last edit undone.");
   } catch (e) { toast(e.message); }
+}
+
+function scrollToFirstChange() {
+  const first = $("paper").querySelector("ins, del, .fmt-changed, .block-ins, .block-del, .row-ins, .row-del, .tbl-del");
+  if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+/* ================================================================== events */
+$("composer").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+$("instruction").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
 });
-$("change-doc").addEventListener("click", () => {
-  state.session = null;
-  history.replaceState(null, "", "/");
-  $("empty").hidden = false;
-  $("toolbar").hidden = true;
-  $("legend").hidden = true;
-  $("paper-wrap").hidden = true;
-  $("result").hidden = true;
-  $("clarify").hidden = true;
-  $("history-card").hidden = true;
-  $("change-doc").hidden = true;
-  $("instruction").disabled = true;
-  $("apply-btn").disabled = true;
-  $("chips").innerHTML = "";
-});
+$("instruction").addEventListener("input", autoGrow);
+$("sel-clear").addEventListener("click", clearSelection);
+$("paper").addEventListener("mouseup", () => setTimeout(captureSelection, 0));
+$("paper").addEventListener("keyup", captureSelection);
+$("view-redline").addEventListener("click", () => { state.view = "redline"; renderDocument(); });
+$("view-clean").addEventListener("click", () => { state.view = "clean"; renderDocument(); });
+$("undo-btn").addEventListener("click", undo);
+$("back-latest").addEventListener("click", () => viewVersion(state.session.latest));
+$("open-btn").addEventListener("click", () => $("file-input").click());
+$("home-btn").addEventListener("click", goHome);
+$("file-input").addEventListener("change", (e) => uploadFile(e.target.files[0]));
 
 const dz = $("dropzone");
-$("file-input").addEventListener("change", (e) => uploadFile(e.target.files[0]));
 ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("drag"); }));
 ["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("drag"); }));
 dz.addEventListener("drop", (e) => uploadFile(e.dataTransfer.files[0]));
+// dropping a file anywhere on the workspace opens it too
+document.addEventListener("dragover", (e) => { if (state.session) e.preventDefault(); });
+document.addEventListener("drop", (e) => {
+  if (!state.session || !e.dataTransfer.files.length) return;
+  e.preventDefault();
+  uploadFile(e.dataTransfer.files[0]);
+});
 
-if (/Mac|iPhone|iPad/.test(navigator.platform)) $("mod-key").textContent = "⌘";
 boot();

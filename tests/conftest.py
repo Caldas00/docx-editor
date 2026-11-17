@@ -8,7 +8,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 from docx_agent.document import DocxPackage  # noqa: E402
-from docx_agent.samples import build_referral_letter, build_session_note  # noqa: E402
+from docx_agent.samples import (  # noqa: E402
+    build_api_reference,
+    build_referral_letter,
+    build_session_note,
+)
 
 
 @pytest.fixture(scope="session")
@@ -19,6 +23,11 @@ def session_note_bytes() -> bytes:
 @pytest.fixture(scope="session")
 def referral_bytes() -> bytes:
     return build_referral_letter()
+
+
+@pytest.fixture(scope="session")
+def api_reference_bytes() -> bytes:
+    return build_api_reference()
 
 
 @pytest.fixture()

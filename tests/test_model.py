@@ -55,7 +55,7 @@ def test_outline_mentions_formatting_and_links(session_note):
     assert 'bold="improved sleep"' in outline
     assert 'italic="two weeks"' in outline
     assert 'link="Sleep hygiene leaflet"' in outline
-    assert "⟦IMAGE⟧" in outline
+    assert "⟦IMAGE#" in outline and "12x12px" not in outline
     assert "(Heading 1)" in outline
 
 

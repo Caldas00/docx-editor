@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from docx_agent.pricing import estimate_cost  # noqa: E402
 from docx_agent.service import EditService  # noqa: E402
 
 EXAMPLES = [
@@ -25,6 +26,9 @@ EXAMPLES = [
      "Address the letter to Dr. Rui Almeida, change the anxiety status in the summary table from "
      "Moderate to Mild, and remove the word 'persistent'."),
     ("intake_form.docx", "Change the preferred name to Sam."),
+    ("api_reference.docx",
+     "Make all the green text purple, remove the emojis, and remove the set_date and "
+     "set_modality rows from the Session class table."),
 ]
 
 
@@ -42,8 +46,12 @@ def main() -> None:
         if res.status != "done":
             raise SystemExit(f"{name}: {res.status} - {res.message}")
         (out / f"{stem}.plan.json").write_text(json.dumps(res.plan, indent=2, ensure_ascii=False) + "\n")
+        cost = estimate_cost(service.settings.model, res.usage)
         lines += [f"## {name}", "", f"**Instruction:** {instruction}", "",
-                  f"**Result:** {res.message}  ", f"Input: `samples/input/{name}` → output: "
+                  f"**Result:** {res.message}  ",
+                  f"{res.llm_calls} LLM call(s), {res.usage.get('input', 0)} input tokens"
+                  + (f", about ${cost:.4f}" if cost is not None else "") + "  ",
+                  f"Input: `samples/input/{name}` → output: "
                   f"`samples/output/{target.name}` · plan: `samples/output/{stem}.plan.json`", "",
                   "| change | block | before | after |", "|---|---|---|---|"]
         for c in res.changes:

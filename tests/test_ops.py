@@ -9,7 +9,9 @@ from docx_agent.document.model import build_index, paragraph_view
 
 LINK = ('<w:hyperlink r:id="rId99"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr>'
         '<w:t>the leaflet</w:t></w:r></w:hyperlink>')
-IMG = ('<w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><wp:docPr id="1" name="i"/>'
+IMG = ('<w:r><w:drawing><wp:inline><wp:extent cx="114300" cy="114300"/>'
+       '<wp:docPr id="1" name="icon"/><a:graphic><a:graphicData><pic:pic><pic:blipFill>'
+       '<a:blip r:embed="rId99"/></pic:blipFill></pic:pic></a:graphicData></a:graphic>'
        '</wp:inline></w:drawing></w:r>')
 
 
@@ -275,7 +277,7 @@ def test_delete_paragraph_with_balanced_bookmark_is_allowed():
 
 
 @pytest.mark.parametrize("body,target_text,match", [
-    (P(IMG) + P(R("x")), "⟦IMAGE⟧", "image"),
+    (P(IMG) + P(R("x")), "⟦IMAGE#1⟧", "image"),
     ("<w:tbl><w:tr><w:tc>" + P(R("only")) + "</w:tc></w:tr></w:tbl>", "only", "only paragraph"),
     ("<w:tbl><w:tr><w:tc>" + P(R("a")) + "</w:tc></w:tr></w:tbl>" + P(R("gap"))
      + "<w:tbl><w:tr><w:tc>" + P(R("b")) + "</w:tc></w:tr></w:tbl>", "gap", "merge"),
@@ -337,3 +339,190 @@ def test_realistic_multi_operation_plan(session_note):
     assert t["t0.r2.c1.p0"] == "7 of 12"
     assert "Dr. Maya Ferreira" not in " ".join(t.values())
     assert report.passed
+
+
+# ------------------------------------------------- formatting (colour, size...)
+GREEN = '<w:color w:val="70AD47"/>'
+
+
+def test_format_text_colour_highlight_and_size():
+    pkg = pkg_of(P(R("plain then coloured words", ITALIC)))
+    out, _ = run_plan(pkg, {"op": "format_text", "block_id": "p0", "find": "coloured",
+                            "color": "7030a0", "highlight": "yellow", "font_size": 14})
+    xml = block_xml(out, "p0")
+    assert ('<w:rPr><w:i/><w:color w:val="7030A0"/><w:sz w:val="28"/><w:szCs w:val="28"/>'
+            '<w:highlight w:val="yellow"/></w:rPr><w:t>coloured</w:t>') in xml
+
+
+def test_format_text_replaces_theme_colour():
+    pkg = pkg_of(P(R("x", '<w:color w:val="70AD47" w:themeColor="accent6"/>')))
+    out, _ = run_plan(pkg, {"op": "format_text", "block_id": "p0", "find": "x", "color": "auto"})
+    assert '<w:color w:val="auto"/>' in block_xml(out, "p0")
+
+
+def test_restyle_changes_every_matching_run_only():
+    body = (P(R("Green title", GREEN + BOLD)) + P(R("black ") + R("green word", GREEN))
+            + "<w:tbl><w:tr><w:tc>" + P(R("green cell", GREEN)) + "</w:tc></w:tr></w:tbl>"
+            + P(R("red", '<w:color w:val="FF0000"/>')))
+    out, report = run_plan(pkg_of(body), {"op": "restyle_text", "match": {"color": "70ad47"},
+                                          "set": {"color": "7030A0"}})
+    xml = "".join(block_xml(out, b) for b in ("p0", "p1", "t0.r0.c0.p0", "p2"))
+    assert xml.count('w:val="7030A0"') == 3 and "70AD47" not in xml
+    assert '<w:color w:val="FF0000"/>' in xml and "<w:b/>" in xml
+    assert report.passed
+
+
+def test_restyle_reports_what_exists_when_nothing_matches():
+    pkg = pkg_of(P(R("red", '<w:color w:val="FF0000"/>')))
+    with pytest.raises(EditError, match=r"color=FF0000 \(1 runs\)"):
+        run_plan(pkg, {"op": "restyle_text", "match": {"color": "00B050"},
+                       "set": {"color": "7030A0"}})
+
+
+def test_restyle_by_bold_scoped_to_one_paragraph():
+    pkg = pkg_of(P(R("a", BOLD) + R(" b")) + P(R("c", BOLD)))
+    out, _ = run_plan(pkg, {"op": "restyle_text", "block_id": "p0", "match": {"bold": True},
+                            "set": {"bold": False, "underline": True}})
+    assert '<w:b w:val="0"/><w:u w:val="single"/>' in block_xml(out, "p0")
+    assert "<w:b/>" in block_xml(out, "p1")
+
+
+# ------------------------------------------------------------------ images
+def icon(n: int, px: int = 12) -> str:
+    emu = px * 9525
+    return (f'<w:r><w:drawing><wp:inline><wp:extent cx="{emu}" cy="{emu}"/>'
+            f'<wp:docPr id="{n}" name="icon{n}"/><a:graphic><a:graphicData><pic:pic>'
+            f'<pic:blipFill><a:blip r:embed="rId9{n}"/></pic:blipFill></pic:pic>'
+            f'</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>')
+
+
+def test_images_get_stable_refs_in_the_text():
+    pkg = pkg_of(P(R("code ") + icon(7)))
+    assert texts(pkg)["p0"] == "code ⟦IMAGE#7⟧"
+
+
+def test_delete_images_by_ref_and_by_size():
+    big = icon(9, px=300)
+    pkg = pkg_of(P(R("a ") + icon(7) + R(" b") + icon(8)) + P(big))
+    out, report = run_plan(pkg, {"op": "delete_images", "images": ["#7"]})
+    assert texts(out)["p0"] == "a  b⟦IMAGE#8⟧"
+    out, report = run_plan(pkg, {"op": "delete_images", "max_size_px": 16})
+    assert texts(out) == {"p0": "a  b", "p1": "⟦IMAGE#9⟧"}
+    assert "1 images" in report.checks[-2].detail
+
+
+def test_delete_images_errors_list_available_pictures():
+    pkg = pkg_of(P(icon(7)))
+    with pytest.raises(EditError, match=r"#99.*IMAGE#7⟧ 12x12px"):
+        run_plan(pkg, {"op": "delete_images", "images": ["#99"]})
+    with pytest.raises(EditError, match="needs `images`"):
+        run_plan(pkg, {"op": "delete_images"})
+
+
+def test_shapes_are_not_deleted_as_images():
+    shape = ('<w:r><w:drawing><wp:anchor><wp:extent cx="95250" cy="95250"/>'
+             '<wp:docPr id="5" name="Text Box 5"/></wp:anchor></w:drawing></w:r>')
+    pkg = pkg_of(P(R("x") + shape))
+    assert texts(pkg)["p0"] == "x⟦SHAPE#5⟧"
+    with pytest.raises(EditError, match="Could not find"):
+        run_plan(pkg, {"op": "delete_images", "max_size_px": 50})
+
+
+def test_delete_paragraph_with_picture_needs_explicit_flag():
+    pkg = pkg_of(P(icon(3)) + P(R("x")))
+    with pytest.raises(EditError, match="delete_images=true"):
+        run_plan(pkg, {"op": "delete_paragraph", "block_id": "p0"})
+    out, _ = run_plan(pkg, {"op": "delete_paragraph", "block_id": "p0", "delete_images": True})
+    assert list(texts(out).values()) == ["x"]
+
+
+# ------------------------------------------------------------------ tables
+def table(rows: list[list[str]], header_props: str = "") -> str:
+    out = "<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid>"
+    for i, row in enumerate(rows):
+        trpr = f"<w:trPr>{header_props}</w:trPr>" if i == 0 and header_props else ""
+        cells = "".join(f'<w:tc><w:tcPr><w:shd w:val="clear" w:fill="EEEEEE"/></w:tcPr>'
+                        f"{P(R(c, BOLD if i == 0 else ''))}</w:tc>" for c in row)
+        out += f"<w:tr>{trpr}{cells}</w:tr>"
+    return out + "</w:tbl>"
+
+
+TBL = P(R("intro")) + table([["Name", "Value"], ["a", "1"], ["b", "2"], ["c", "3"]],
+                            "<w:tblHeader/>") + P(R("outro"))
+
+
+def row_texts(pkg) -> list[str]:
+    t = texts(pkg)
+    rows: dict[str, list[str]] = {}
+    for bid, txt in t.items():
+        if bid.startswith("t0.r"):
+            rows.setdefault(bid.split(".c")[0], []).append(txt)
+    return [" | ".join(v) for v in rows.values()]
+
+
+def test_delete_table_rows():
+    out, _ = run_plan(pkg_of(TBL), {"op": "delete_table_rows", "rows": ["t0.r1", "t0.r3"]})
+    assert row_texts(out) == ["Name | Value", "b | 2"]
+
+
+def test_insert_table_row_copies_body_row_formatting():
+    out, report = run_plan(pkg_of(TBL), {"op": "insert_table_row", "row": "t0.r2",
+                                         "position": "after", "cells": ["new", "9\n10"]})
+    assert row_texts(out) == ["Name | Value", "a | 1", "b | 2", "new | 9 | 10", "c | 3"]
+    xml = block_xml(out, "t0.r3.c0.p0")
+    assert "<w:b/>" not in xml
+    assert report.passed
+
+
+def test_inserted_row_from_header_template_is_not_a_header():
+    out, _ = run_plan(pkg_of(TBL), {"op": "insert_table_row", "row": "t0.r0", "position": "after",
+                                    "cells": ["x", "y"], "format_like_row": "t0.r0"})
+    tbl = build_index(out).get("t0").element
+    from docx_agent.document.ns import qn
+    assert len(list(tbl.iter(qn("w:tblHeader")))) == 1
+
+
+def test_row_ids_keep_original_numbering_within_a_plan():
+    out, _ = run_plan(pkg_of(TBL),
+                      {"op": "delete_table_rows", "rows": ["t0.r1"]},
+                      {"op": "insert_table_row", "row": "t0.r3", "position": "after",
+                       "cells": ["d", "4"]},
+                      {"op": "replace_text", "block_id": "t0.r2.c1.p0", "find": "2",
+                       "replace_with": "22"})
+    assert row_texts(out) == ["Name | Value", "b | 22", "c | 3", "d | 4"]
+
+
+@pytest.mark.parametrize("op,match", [
+    ({"op": "delete_table_rows", "rows": ["t0.r0", "t0.r1", "t0.r2", "t0.r3"]}, "delete_table"),
+    ({"op": "delete_table_rows", "rows": ["t0.r9"]}, "only 4 rows"),
+    ({"op": "delete_table_rows", "rows": ["t0"]}, "not a row id"),
+    ({"op": "insert_table_row", "row": "t0.r1", "position": "after", "cells": ["one"]},
+     "has 2 cells"),
+])
+def test_table_row_refusals(op, match):
+    with pytest.raises(EditError, match=match):
+        run_plan(pkg_of(TBL), op)
+
+
+def test_row_starting_a_vertical_merge_is_refused():
+    merged = ("<w:tbl><w:tr><w:tc><w:tcPr><w:vMerge w:val=\"restart\"/></w:tcPr>" + P(R("m"))
+              + "</w:tc></w:tr><w:tr><w:tc><w:tcPr><w:vMerge/></w:tcPr>" + P("")
+              + "</w:tc></w:tr><w:tr><w:tc>" + P(R("z")) + "</w:tc></w:tr></w:tbl>" + P(R("x")))
+    with pytest.raises(EditError, match="vertically merged"):
+        run_plan(pkg_of(merged), {"op": "delete_table_rows", "rows": ["t0.r0"]})
+    out, _ = run_plan(pkg_of(merged), {"op": "delete_table_rows", "rows": ["t0.r0", "t0.r1"]})
+    assert texts(out)["t0.r0.c0.p0"] == "z"
+
+
+def test_delete_table_and_reference_after_it():
+    out, _ = run_plan(pkg_of(TBL), {"op": "delete_table", "table_id": "t0"})
+    assert list(texts(out).values()) == ["intro", "outro"]
+    with pytest.raises(EditError, match="removed by an earlier operation"):
+        run_plan(pkg_of(TBL), {"op": "delete_table", "table_id": "t0"},
+                 {"op": "replace_text", "block_id": "t0.r1.c0.p0", "find": "a",
+                  "replace_with": "z"})
+
+
+def test_row_id_used_as_paragraph_gets_a_hint():
+    with pytest.raises(EditError, match="is a table row"):
+        run_plan(pkg_of(TBL), {"op": "delete_paragraph", "block_id": "t0.r1"})

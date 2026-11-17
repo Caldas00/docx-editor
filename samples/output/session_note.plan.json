@@ -1,5 +1,5 @@
 {
-  "summary": "Updated the clinician name throughout, changed the session number, and added the new grounding exercise to the interventions list.",
+  "summary": "Update the clinician name throughout, set the session number to 7 of 12, and add the grounding exercise intervention.",
   "operations": [
     {
       "op": "replace_text",

@@ -1,5 +1,5 @@
 {
-  "summary": "Updated the preferred name to Sam.",
+  "summary": "Change the preferred name from Alex to Sam.",
   "operations": [
     {
       "op": "replace_text",

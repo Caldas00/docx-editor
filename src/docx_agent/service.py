@@ -33,6 +33,7 @@ class EditOutcome:
     changes: list[dict[str, Any]] = field(default_factory=list)
     verification: dict[str, Any] | None = None
     llm_calls: int = 0
+    usage: dict[str, int] = field(default_factory=dict)  # tokens: input / output / cached
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -51,13 +52,15 @@ class EditService:
         return {"configurable": {"thread_id": thread_id}, **self._config_extra}
 
     def start(self, input_path: str | Path, instruction: str, output_path: str | Path,
-              thread_id: str | None = None) -> EditOutcome:
+              thread_id: str | None = None,
+              selection: dict[str, Any] | None = None) -> EditOutcome:
         thread_id = thread_id or uuid.uuid4().hex
         instruction = instruction.strip()
         if not instruction:
             return EditOutcome(thread_id, "failed", "The instruction is empty.")
         return self._run(thread_id, {"instruction": instruction, "input_path": str(input_path),
-                                     "output_path": str(output_path)})
+                                     "output_path": str(output_path),
+                                     "selection": selection})
 
     def resume(self, thread_id: str, answer: str) -> EditOutcome:
         return self._run(thread_id, Command(resume=answer))
@@ -94,6 +97,7 @@ class EditService:
             changes=values.get("changes") or [],
             verification=values.get("verification"),
             llm_calls=values.get("steps", 0),
+            usage=dict(values.get("usage") or {}),
         )
         if pending:
             payload = pending[0].value or {}

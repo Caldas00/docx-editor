@@ -34,7 +34,8 @@ def test_examples_exist():
 
 def test_preview_renders_structure(session_note):
     html = render_preview(session_note)
-    assert '<h1 class="para title">Session Progress Note</h1>' in html
+    assert '<h1 class="para title" data-bid="p0">Session Progress Note</h1>' in html
+    assert 'data-bid="t0.r2.c1.p0"' in html and 'data-row="t0.r2"' in html
     assert "<table" in html and "data:image/png;base64," in html
     assert '<strong>Dr. Maya Ferreira</strong>' in html
     assert 'class="link"' in html
@@ -65,3 +66,26 @@ def test_redline_trims_unchanged_words():
     apply_plan(after, p)
     html = render_redline(before, after, p)
     assert "Session <del>6</del><ins>7</ins> of 12" in html
+
+
+def test_redline_shows_row_and_picture_changes(api_reference_bytes):
+    before = DocxPackage(api_reference_bytes)
+    p = plan({"op": "delete_table_rows", "rows": ["t0.r4"]},
+             {"op": "insert_table_row", "row": "t0.r1", "position": "after",
+              "cells": ["void", "reset()", "Clears the note."]},
+             {"op": "delete_images", "images": ["#5"]})
+    after = before.copy()
+    apply_plan(after, p)
+    html = render_redline(before, after, p)
+    assert html.count('class="row-ins"') == 1 and html.count('class="row-del"') == 1
+    assert "<del>set_date(Date d)</del>" in html
+    assert "<del><img" in html
+
+
+def test_redline_shows_deleted_table(api_reference_bytes):
+    before = DocxPackage(api_reference_bytes)
+    p = plan({"op": "delete_table", "table_id": "t0"})
+    after = before.copy()
+    apply_plan(after, p)
+    html = render_redline(before, after, p)
+    assert "tbl-del" in html and "<del>get_client_id()</del>" in html

@@ -1,14 +1,16 @@
 # Docx Agent
 
 A LangGraph agent that edits **existing Word (.docx) documents** from natural-language
-instructions ("change the session number to 7 of 12", "add a bullet about grounding
-techniques", "remove the word 'persistent'"), and changes **only** what the instruction
-requires. Styles, run formatting, tables, images, links, fields, comments, headers and footers
-outside the edit stay exactly as they were, and every edit is checked mechanically before it is
-saved.
+instructions, and changes **only** what the instruction requires. Examples: "change the session
+number to 7 of 12", "make all the green text purple", "remove the emojis", "delete the
+set_date row from the table", or "make this bold" with text selected. Styles, run formatting,
+tables, images, links, fields, comments, headers and footers outside the edit stay exactly as
+they were, and every edit is checked mechanically before it is saved.
 
-It ships with a CLI, a small web UI that shows a redline of each change, and a test suite that
-treats document integrity as the main requirement.
+It ships with a CLI and a web UI. The web UI has a chat panel, lets you point at the document
+by selecting text, and shows a redline of each change. The test suite treats document
+integrity as the main requirement. The default model (`gpt-6-luna`) costs about **$0.0001 per
+edit**.
 
 ![Web UI](docs/web-ui.png)
 
@@ -23,7 +25,7 @@ uv sync
 cp .env.example .env        # then put your OPENAI_API_KEY in .env
 ```
 
-**Web UI** (pick a sample or upload a .docx, type an instruction, review the redline, download):
+**Web UI** (open a .docx or a sample, select text if you want, chat, review the redline, download):
 
 ```bash
 uv run docx-agent serve     # http://127.0.0.1:8000
@@ -43,10 +45,22 @@ uv run docx-agent apply samples/input/session_note.docx \
 **Tests and evals**
 
 ```bash
-uv run pytest                    # 107 offline tests (no network, about 12 s)
+uv run pytest                    # 140 offline tests (no network, about 14 s)
 uv run pytest -m llm             # end-to-end tests against the real API
-uv run python evals/run.py       # behavioural evals against the real API (22 cases)
+uv run python evals/run.py       # behavioural evals against the real API (30 cases)
 ```
+
+**Using the web UI**
+- **Open** a document from the start page (drop a file or pick a sample) or with **Open
+  document** in the toolbar at any time. The logo returns to the start page.
+- **Select text** in the preview to point at it, as in an editor chat. The selection, with the
+  block ids it covers, is sent with your message, so "make this bold" or "translate this" act
+  on it.
+- **The chat** keeps the whole conversation. Each answer shows what changed, the integrity
+  report, the plan, the time taken and the cost. Questions from the agent appear as buttons;
+  you can also type the answer.
+- **Changes / Clean** toggles the redline. Every edit is a version you can view, download or
+  undo.
 
 **Samples** (synthetic, no real patient data): `samples/input/*.docx` are the inputs.
 `samples/output/` holds the edited documents, the plan that produced each one, and
@@ -62,7 +76,7 @@ src/docx_agent/
   document/            deterministic core (no LLM)
     package.py         opens the .docx zip, rewrites only word/document.xml
     model.py           text view: blocks with stable ids, paragraphs as "pieces"
-    ops.py             the 6 edit operations + run-level edit engine
+    ops.py             the 11 edit operations + run-level edit engine
     oracle.py          replays a plan on plain strings (independent model)
     verify.py          9 integrity checks: before vs. after vs. oracle
     render.py          HTML preview + redline for the UI
@@ -114,9 +128,11 @@ The LLM never sees the XML. It sees one line per block, with a stable id:
 
 ```
 [p5] (Normal) "The client reported improved sleep over the past two weeks, … Work-related anxiety remains …"  {bold="improved sleep"; italic="two weeks"}
-[t0.r2.c1.p0] (Normal) "6 of 12"
-[p13] (Normal) "⟦IMAGE⟧"
+[t0] TABLE 5 rows x 2 cols (rows t0.r0-t0.r4)
+  [t0.r2.c1.p0] (Normal) "6 of 12"
+[p13] (Normal) "⟦IMAGE#1⟧"  {images: ⟦IMAGE#1⟧ 416x156px "Picture 1"}
 [p19] (Normal) "Resource shared: Sleep hygiene leaflet (opens in browser)."  {link="Sleep hygiene leaflet"}
+[p1] (Normal) "Note: this reference is generated from synthetic data."  {all color #70AD47; bold="Note: "}
 ```
 
 Edits address text by **block id + exact anchor text**, never by character offsets or XPath.
@@ -132,7 +148,15 @@ correction hint.
 | `insert_text` | Insert before or after an anchor, or at the start or end of a paragraph. |
 | `insert_paragraph` | Insert new paragraph(s) before or after a paragraph or table. `format_like` names the paragraph whose style, list numbering and run formatting to copy. |
 | `delete_paragraph` | Delete a paragraph. It is refused when that would lose content or break structure: images, fields, comment anchors, half of a bookmark, a section break, the last paragraph of a table cell, or the paragraph separating two tables. |
-| `format_text` | Set bold, italic or underline on exact text. Runs are split at the boundaries and the properties are written in schema order. |
+| `format_text` | Set bold, italic, underline, strike, colour, highlight or font size on exact text. Runs are split at the boundaries and the properties are written in schema order. |
+| `restyle_text` | Change the formatting of **all** existing text that has some formatting now, e.g. `{"match": {"color": "70AD47"}, "set": {"color": "7030A0"}}` for "make the green text purple". If nothing matches, the error lists the values that do exist so the planner can correct itself. |
+| `delete_images` | Delete pictures by ref (`#12`, shown in the outline with their size), by paragraph, or by size (`max_size_px` for icons and emojis). Shapes and text boxes are never deleted. `delete_paragraph` needs `delete_images: true` to remove a paragraph that holds pictures. |
+| `delete_table_rows` | Delete whole rows (`t1.r23`). It is refused if it would empty the table, or if a row starts a vertical merge that continues below. |
+| `insert_table_row` | Insert a row next to an existing one, one text per cell. It copies a template row's properties and each cell's first paragraph, never as a header row and never vertically merged. |
+| `delete_table` | Delete a whole table. |
+
+Row ids keep their original numbering for the whole plan, so "delete r3, then insert after
+r5" means the rows the planner saw.
 
 ### Why it preserves formatting
 
@@ -180,13 +204,15 @@ Python strings and tracks the origin of every character.
    keeps its exact run formatting and container (e.g. the hyperlink), and inserted text reuses
    formatting that already existed in that paragraph. Formatting changes only where
    `format_text` asked for it.
-7. New paragraphs have exactly the template's paragraph properties and run formatting.
+7. New paragraphs and rows have exactly their template's paragraph, row and cell properties
+   and run formatting (header-repeat and vertical merges stripped).
 8. The counts of images, tables, links, fields, bookmarks, comment anchors, notes, sections
-   and tracked changes are preserved.
+   and tracked changes are preserved, minus exactly what the plan removes (the oracle lists
+   every removed paragraph, row, table and picture).
 9. OOXML structure rules hold: every table cell ends with a paragraph, and the body ends with
    its `sectPr`.
 
-**2. Offline test suite (107 tests, about 12 s, no network)**
+**2. Offline test suite (140 tests, about 14 s, no network)**
 
 - **Engine unit tests** (`test_ops.py`) cover each operation and each refusal. They use
   synthetic XML with split runs, hyperlinks, fields, tracked changes, content controls,
@@ -196,15 +222,19 @@ Python strings and tracks the origin of every character.
   buggy editor would, and check that the verifier catches each case. The tampering includes
   changing an untouched paragraph, dropping bold from an edited paragraph, adding text,
   restyling a new paragraph, deleting an image, deleting a paragraph and editing `styles.xml`.
-- **A fuzz test** (`test_fuzz.py`) runs 500 random plans on the sample documents. Each plan is
-  either refused with an `EditError` or passes every check; nothing is silently corrupted.
-  About 400 of them are applied and verified.
+- **A fuzz test** (`test_fuzz.py`) runs 750 random plans, mixing all 11 operations, on three
+  sample documents. Each plan is either refused with an `EditError` or passes every check;
+  nothing is silently corrupted. About 430 of them are applied and verified. The fuzz test
+  found two real interaction bugs while the table and restyle operations were being added.
 - **Graph tests** (`test_graph.py`) use a scripted LLM to exercise every route: happy path,
   exploration, error feedback and correction, schema errors, the retry limit, the
   clarification interrupt and resume, decline, nudge, the step limit and bad input.
 - **Web API tests** (`test_web.py`), **package tests** (round-trip losslessness, XXE, malformed
   input), and **replay tests** that rebuild the committed sample outputs from their plans and
   check them byte-for-byte.
+- **Mutation tests for the new operations** check that the verifier catches an extra row
+  deleted, a new row marked as a header, an extra picture removed, and a colour changed outside
+  the match.
 - **Regression tests** (`test_regressions.py`) cover the issues found in code review: HTML
   injection through document attributes, LLM/API errors, several tool calls in one message,
   formatting a range that ends on a tab, custom XML blocks, the paragraph after a final table,
@@ -212,29 +242,39 @@ Python strings and tracks the origin of every character.
 
 **3. Behavioural evals against the real model (`evals/`)**
 
-There are 22 cases across 3 documents. They cover replacements in table cells, global
+There are 30 cases across 4 documents. They cover replacements in table cells, global
 renames, list items, sentence and paragraph deletion, new sections (heading and body),
 formatting, multi-edit instructions, link text, a word split across runs, an ambiguous date
 (which must trigger a clarification), out-of-scope requests (which must be declined), text that
 does not exist, a Portuguese instruction, a truncated outline (which forces the search tool),
-and **a prompt injection inside the document**. Each case checks the outcome: required and
-forbidden text, the styles of new paragraphs, bold or italic, how many paragraphs changed (to
-catch over-editing), no new double spaces, and that verification passed. Results are in
+**a prompt injection inside the document**, recolouring ("make the green text purple"),
+removing icons, deleting, inserting and removing table rows and tables, highlight and colour,
+and instructions that refer to a selection ("make this bold", "traduz isto para português").
+Each case checks the outcome: required and forbidden text, the styles of new paragraphs, bold
+or italic, colours present or absent, picture count, table row counts and no empty rows, how
+many paragraphs changed (to catch over-editing), no new double spaces, and that verification
+passed. The runner also records token usage and estimated cost. Results are in
 [`evals/results/latest.md`](evals/results/latest.md) (latest run of the default model); the model comparison below is in [`evals/results/model-comparison.md`](evals/results/model-comparison.md).
 
-| model | pass rate (22 cases × 3 runs) | median latency | failures |
+| model | passed (30 cases × 3 runs) | median latency | avg cost / edit |
 |---|---|---|---|
-| **gpt-5.5** (default, low reasoning) | **66/66** | 2.1 s | – |
-| gpt-5.4-mini (low reasoning) | 64/66 | 2.1 s | gave the body of a new section a list style |
-| gpt-4.1 | 63/66 | 1.3 s | guessed which date to change instead of asking |
+| **gpt-6-luna** (default, low reasoning) | **90/90** | 2.4 s | **$0.0001** |
+| gpt-5.4-mini | 90/90 | 2.2 s | $0.0012 |
+| gpt-5-mini | 90/90 | 3.3 s | $0.0007 |
+| gpt-5.5 (previous default) | 30/30 (1 run) | 2.3 s | $0.0118 |
 
-The prompt was tuned against this suite. The first gpt-4.1 run scored 16/18; the two
-failures led to the rules about "one insert per style" and "ask when ONE thing has several
-candidates" in `agent/prompts.py`.
+The prompt was tuned against this suite. The first gpt-4.1 run scored 16/18; the two failures
+led to the rules about "one insert per style" and "ask when ONE thing has several candidates".
+Later, `gpt-6-luna` once picked a different purple, which led to the colour-name table in
+`agent/prompts.py`. The static rules come before the document in the prompt, so repeated calls
+reuse the provider's prompt cache (over 99 % of input tokens on a follow-up call in a
+900-block document).
 
-**4. Real Word check.** Heavily edited outputs, with every operation type applied, were opened
-in Microsoft Word for Mac through AppleScript. They opened with no repair prompt, and the PDF
-exports showed the header image, table, lists, chart, caption and comment intact.
+**4. Real Word check.** Heavily edited outputs were opened in Microsoft Word for Mac through
+AppleScript. Every operation type was applied, including rows deleted and inserted, 61 icons
+removed from a 960-paragraph technical document, and restyled text. They opened with no repair
+prompt. Word reported the expected row and picture counts, and the PDF exports showed the
+header image, tables, lists, chart, caption and comment intact.
 
 ---
 
@@ -250,24 +290,31 @@ exports showed the header image, table, lists, chart, caption and comment intact
 - **A second, independent implementation as the test oracle.** The XML engine and the string
   oracle must agree on every character. This is what makes the fuzz test meaningful.
 - **Refuse instead of guessing.** Overlapping protected content, ambiguous anchors, deleting
-  paragraphs that hold images or bookmarks, and structural table edits all produce explicit
-  errors or a decline. The case brief values transparent limitations, and so does this design.
+  paragraphs that hold bookmarks, and deleting rows that start a vertical merge all produce
+  explicit errors or a decline. Pictures are only removed when the plan says so explicitly.
+  The case brief values transparent limitations, and so does this design.
 - **Only `word/document.xml` is rewritten**, which turns "nothing else changed" into a
   byte-level fact.
-- **The model is swappable.** The default, `gpt-5.5` with low reasoning effort, was chosen
-  from the eval results. `DOCX_AGENT_MODEL` overrides it.
+- **A cheap model is enough because the hard part is deterministic.** The LLM only chooses
+  operations; the engine and verifier do the risky work. `gpt-6-luna` passes the same suite as
+  models costing 10-100× more. `DOCX_AGENT_MODEL` overrides it, and the UI shows the
+  estimated cost of every edit.
 
 ## Known limitations
 
 - **Main document body only.** Headers, footers, footnotes, comments and text boxes are
   preserved but cannot be edited.
-- **No structural table or image edits.** The agent cannot add or remove table rows or
-  columns, or insert, resize or replace images.
+- **Partial table and image support.** Rows and whole tables can be added or removed, but
+  columns and merged-cell layouts cannot be changed. Pictures can be deleted but not inserted,
+  resized or replaced. A deleted picture's media file stays in the package unreferenced (Word
+  ignores it), because only `word/document.xml` is ever rewritten.
 - **Text inside protected elements cannot be edited.** This covers tracked changes, content
   controls, fields and equations. The text around them can be edited.
 - **New text formatting is limited.** New text inherits the formatting where it is inserted.
   New paragraphs copy one template paragraph, so mixed formatting inside a *new* paragraph
-  (e.g. a bold label) is not supported. `format_text` covers bold, italic and underline only.
+  (e.g. a bold label) is not supported in one step; the planner adds `format_text` afterwards.
+  Formatting that comes from a style (e.g. bold headings) is shown only when applied
+  directly, and `restyle_text` matches direct formatting only.
 - **Fields are tracked per paragraph.** A complex field that spans several paragraphs, such
   as a table of contents, is treated per paragraph, so its entries look like editable text.
 - **Matching is exact.** There is no fuzzy matching; the agent relies on error feedback when
