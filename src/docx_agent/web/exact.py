@@ -4,9 +4,8 @@ No HTML imitation lays a .docx out like a word processor (font metrics, line bre
 floating shapes, fields...), so when LibreOffice is installed the web UI shows *its* pages:
 the version is converted to PDF headlessly (`soffice --headless --convert-to pdf`) and the
 browser draws that PDF with a selectable text layer. LibreOffice is open source and runs on
-any OS without a display; the Docker image ships it, so the app stays self-contained. Without
-it, the UI falls back to its own HTML layout. Conversion works on a copy and never changes
-the .docx.
+any OS without a display, so no word processor is needed. Without it, the UI falls back to
+its own HTML layout. Conversion works on a copy and never changes the .docx.
 """
 
 from __future__ import annotations

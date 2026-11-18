@@ -153,7 +153,7 @@ function finishHeader(s) {
 }
 
 /* ============================================================== exact pages */
-// When LibreOffice is available (it ships in the Docker image), the "Document" view shows the
+// When LibreOffice is installed, the "Document" view shows the
 // pages as a real layout engine lays them out: the server converts the version to PDF and
 // pdf.js draws each page with a text layer, so text can still be selected, marked and pointed
 // at. Without it, the view uses the app's own HTML layout.

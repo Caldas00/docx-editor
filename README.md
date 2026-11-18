@@ -11,26 +11,17 @@ costs about $0.0002 per edit.
 
 ## Quick start
 
-You need an OpenAI API key. Copy `.env.example` to `.env` and put the key in it. Then run the
-app in one of two ways:
-
-**Option 1: with Docker (nothing else to install).** The image already includes LibreOffice,
-which draws the real pages in the **Document** view.
-
-```bash
-docker build -t docx-agent . && docker run --rm -p 8000:8000 --env-file .env docx-agent
-```
-
-**Option 2: directly with Python.** Needs Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
-Install [LibreOffice](https://www.libreoffice.org) too (`brew install --cask libreoffice` on
-macOS) to see the real pages; without it the app shows its own close approximation.
+Requires Python ≥ 3.12, [uv](https://docs.astral.sh/uv/) and an OpenAI API key.
 
 ```bash
 uv sync
-uv run docx-agent serve
+cp .env.example .env              # put your OPENAI_API_KEY in .env
+uv run docx-agent serve           # open http://127.0.0.1:8000 and drop in any .docx
 ```
 
-Then open http://127.0.0.1:8000 and drop in any .docx.
+Optional: install [LibreOffice](https://www.libreoffice.org) (`brew install --cask libreoffice`
+on macOS, `apt-get install libreoffice-writer` on Linux) and the **Document** view shows the
+real pages, laid out by LibreOffice. Without it the app shows its own close approximation.
 
 ## Features
 
