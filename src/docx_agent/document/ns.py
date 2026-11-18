@@ -103,6 +103,8 @@ class M:
 
 class MC:
     AlternateContent = qn("mc:AlternateContent")
+    Choice = qn("mc:Choice")
+    Fallback = qn("mc:Fallback")
 
 
 XML_SPACE = qn("xml:space")

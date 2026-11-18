@@ -25,6 +25,7 @@ from lxml import etree
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .model import (
+    TXBX,
     Block,
     DocumentIndex,
     ParagraphView,
@@ -34,6 +35,9 @@ from .model import (
     image_info,
     paragraph_view,
     run_props,
+    text_box_fallback,
+    text_box_key,
+    text_boxes,
 )
 from .ns import R_ID, XML_SPACE, W, qn
 from .package import (
@@ -81,7 +85,8 @@ class DeleteText(_Op):
     )
     find: str = Field(
         min_length=1,
-        description="Exact text to delete. Include one adjacent space so no double space is left.",
+        description="Exact text to delete, including the adjacent space(s) so no double, "
+                    "leading or trailing space is left.",
     )
     occurrence: Occurrence = Field(default=None, description=_OCC_DESC)
 
@@ -214,6 +219,18 @@ class DeleteTableRows(_Op):
     rows: list[str] = Field(min_length=1, description="Row ids: table id + '.r' + row index, e.g. 't1.r23'.")
 
 
+class ReorderTableRows(_Op):
+    """Put rows of ONE table in a new order (reverse, sort, swap, move up/down): the rows in
+    `order` fill, in that order, the positions those same rows occupy now. Rows move whole,
+    with their formatting and pictures."""
+
+    op: Literal["reorder_table_rows"]
+    order: list[str] = Field(
+        min_length=2, max_length=500,
+        description="Row ids in their NEW order, e.g. ['t0.r4', 't0.r3', 't0.r2', 't0.r1'] "
+                    "reverses rows 1-4. Leave header rows out to keep them on top.")
+
+
 class InsertTableRow(_Op):
     """Insert a new table row next to an existing one, copying a row's formatting."""
 
@@ -285,8 +302,9 @@ class DuplicateBlocks(_Op):
 
 
 class SetParagraphFormat(_Op):
-    """Change paragraph style (e.g. Heading 1 -> Heading 2, Normal -> Title), alignment, or
-    take paragraphs out of a numbered/bulleted list."""
+    """Change paragraph style (e.g. Heading 1 -> Heading 2, Normal -> Title), alignment, the
+    background colour of the paragraph (its shading, the "box" behind it), or take paragraphs
+    out of a numbered/bulleted list."""
 
     op: Literal["set_paragraph_format"]
     block_ids: list[str] = Field(min_length=1, max_length=100)
@@ -294,6 +312,85 @@ class SetParagraphFormat(_Op):
                                                         "document, e.g. 'Heading 2'.")
     align: Literal["left", "center", "right", "justify"] | None = None
     remove_numbering: bool = Field(default=False, description="Remove list bullets/numbers.")
+    shading: Annotated[str, Field(pattern=r"^(?:[0-9A-Fa-f]{6}|none)$")] | None = Field(
+        default=None, description="Background colour of the whole paragraph (RRGGBB), or "
+                                  "'none' to remove it.")
+
+
+def shading_element(fill: str) -> etree._Element:
+    """The w:shd a paragraph gets for a background colour (shared with the verifier)."""
+    shd = etree.Element(qn("w:shd"))
+    shd.set(W.val, "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), fill.upper())
+    return shd
+
+
+class SetShapeFill(_Op):
+    """Change the fill (background) colour of a shape drawn in the document - a coloured
+    banner, band or box, including the area behind a text box. Every filled area of that
+    drawing gets the colour; its text and outline stay as they are."""
+
+    op: Literal["set_shape_fill"]
+    target: str = Field(description="The text box part it holds, e.g. 'tb3', or a shape ref "
+                                    "from the outline, e.g. '#5'.")
+    color: Annotated[str, Field(pattern=r"^[0-9A-Fa-f]{6}$")]
+
+
+_FILLS = (qn("a:solidFill"), qn("a:gradFill"), qn("a:pattFill"))
+_VML_FILL = "{urn:schemas-microsoft-com:vml}fill"
+
+
+def recolor_drawing(node: etree._Element, color: str) -> int:
+    """Give every filled area of a drawing one solid colour, in its DrawingML and its VML
+    copy alike; returns how many fills changed. Shared with the verifier, which applies it
+    to the original drawing to know exactly what the edited one must be."""
+    color = color.upper()
+    changed = 0
+    for sppr in list(node.iter()):
+        if not isinstance(sppr.tag, str) or not sppr.tag.endswith(("}spPr", "}grpSpPr")):
+            continue
+        for child in list(sppr):
+            if child.tag in _FILLS:
+                fill = etree.Element(qn("a:solidFill"))
+                etree.SubElement(fill, qn("a:srgbClr")).set("val", color)
+                child.addprevious(fill)
+                sppr.remove(child)
+                changed += 1
+    for el in node.iter():
+        if not isinstance(el.tag, str):
+            continue
+        if el.get("fillcolor") is not None and el.get("filled") not in ("f", "false"):
+            el.set("fillcolor", f"#{color}")
+            changed += 1
+        if el.tag == _VML_FILL and el.get("color") is not None:
+            el.set("color", f"#{color}")
+    return changed
+
+
+def find_drawing(pkg: DocxPackage, index: DocumentIndex, target: str
+                 ) -> tuple[etree._Element, etree._Element, str]:
+    """(the run child holding the drawing, its paragraph in the body, a label) for a text box
+    part id ('tb3') or a shape ref ('#5'). Shared by the engine and the oracle."""
+    target = target.strip()
+    block = index.get(target)
+    if block is not None and block.element.tag == TXBX:
+        node = block.element
+        while node.getparent() is not None and node.getparent().tag != W.r:
+            node = node.getparent()
+        host = next((a for a in node.iterancestors() if a.tag == W.p), None)
+        if host is None or node.getparent() is None:
+            raise EditError(f"{target} is not inside a paragraph's drawing.")
+        return node, host, f"the shape holding {target}"
+    ref = target.lstrip("#")
+    for b in index.paragraphs():
+        if not b.editable or b.id.startswith("tb"):
+            continue
+        for pc in paragraph_view(b.element).pieces:
+            if pc.label in ("SHAPE", "IMAGE") and image_info(pc.node).ref == ref:
+                return pc.node, b.element, f"shape #{ref}"
+    raise EditError(f"There is no shape {target!r}; use a text box id (tb3) or a shape ref "
+                    "from the outline (#5).")
 
 
 class SplitParagraph(_Op):
@@ -343,7 +440,8 @@ class DeleteTableColumns(_Op):
 
 class BlocksToTable(_Op):
     """Put existing consecutive paragraphs and/or tables into a new table (one block per
-    cell, row by row), keeping their formatting; tables become nested tables."""
+    cell, row by row), keeping their formatting; tables become nested tables. Blank spacer
+    paragraphs among them are removed instead of getting a cell of their own."""
 
     op: Literal["blocks_to_table"]
     block_ids: list[str] = Field(min_length=1, max_length=200)
@@ -395,10 +493,11 @@ class CreateHeaderFooter(_Op):
 
 EditOp = Annotated[
     ReplaceText | DeleteText | InsertText | InsertParagraph | DeleteParagraph | FormatText
-    | RestyleText | DeleteImages | DeleteTableRows | InsertTableRow | DeleteTable | InsertTable
+    | RestyleText | DeleteImages | DeleteTableRows | ReorderTableRows | InsertTableRow
+    | DeleteTable | InsertTable
     | MoveBlocks | DuplicateBlocks | SetParagraphFormat | SplitParagraph | MergeParagraphs
     | InsertPageBreak | InsertTableColumn | DeleteTableColumns | BlocksToTable
-    | InsertHyperlink | RemoveHyperlink | SetHyperlinkUrl | CreateHeaderFooter,
+    | InsertHyperlink | RemoveHyperlink | SetHyperlinkUrl | CreateHeaderFooter | SetShapeFill,
     Field(discriminator="op"),
 ]
 
@@ -454,6 +553,21 @@ def deletion_whitespace_problem(text: str, start: int, end: int) -> str | None:
     if not after and before.endswith(" ") and before.strip():
         return "it would leave a trailing space"
     return None
+
+
+def deletion_with_spaces(text: str, start: int, end: int) -> str | None:
+    """The `find` that deletes text[start:end] plus the spaces that would otherwise be
+    left over (a whole run of them: code lines are often padded up to a callout icon), or
+    None when no such widening fixes it."""
+    if text[:start].endswith(" ") and (not text[end:].startswith(" ") or not text[:start].strip()):
+        while start > 0 and text[start - 1] == " ":
+            start -= 1
+    else:
+        while end < len(text) and text[end] == " ":
+            end += 1
+    if deletion_whitespace_problem(text, start, end) or text[start:end] == text:
+        return None
+    return text[start:end]
 
 
 def _check_inline_text(value: str, what: str) -> str:
@@ -925,6 +1039,12 @@ def removal_problem(el: etree._Element) -> str | None:
     return None
 
 
+def is_blank_paragraph(el: etree._Element) -> bool:
+    """An empty spacer paragraph: no text, pictures or other content, nothing anchored to it.
+    Shared with the oracle (blocks_to_table removes these instead of giving them a cell)."""
+    return el.tag == W.p and not paragraph_view(el).pieces and removal_problem(el) is None
+
+
 # ================================================================ change log
 @dataclass
 class Change:
@@ -960,6 +1080,10 @@ class DocumentEditor:
         self._rows_inserted: set[etree._Element] = set()  # tables that got new rows
         self._cols_changed: set[etree._Element] = set()  # tables whose columns changed
         self._next_docpr = first_free_docpr_id(pkg)
+        # block -> (its id, "before"/"after") for page breaks this plan put next to it
+        self._page_breaks_at: dict[etree._Element, tuple[str, str]] = {}
+        # moved block -> the page-break paragraph that stood right before it and stayed behind
+        self._left_breaks: dict[etree._Element, etree._Element] = {}
         self._source_bytes = pkg.to_bytes()  # for templates as they were (see _original)
         self._cell_first: dict[etree._Element, etree._Element] = {}
         for b in self.index.blocks:
@@ -993,6 +1117,12 @@ class DocumentEditor:
             hint = (f" {block_id!r} is a table row: use it with delete_table_rows / "
                     f"insert_table_row; paragraphs in it look like {block_id}.c0.p0."
                     if _ROW_ID.match(block_id) else "")
+            if not hint:
+                # Usually a guessed id for a paragraph this plan inserts. New content has no
+                # id: it gets its look from `format_like` when it is inserted.
+                hint = (" Paragraphs and tables added by this plan have no ids and cannot be "
+                        "referenced; give a new paragraph its style with `format_like` (e.g. a "
+                        "heading of the same level) and position it next to an existing block.")
             raise EditError(f"There is no block with id {block_id!r}.{hint}")
         if block.kind not in kinds:
             raise EditError(f"{block_id} is a {block.kind}, expected a {' or '.join(kinds)}.")
@@ -1009,8 +1139,9 @@ class DocumentEditor:
         return node is self.pkg.document or any(node is hf.root for hf in self.pkg.hf_parts)
 
     def _root_of(self, el: etree._Element) -> etree._Element:
+        """The part an element belongs to: the body, a header/footer, or a text box."""
         node = el
-        while node.getparent() is not None and node.tag != W.body:
+        while node.getparent() is not None and node.tag not in (W.body, TXBX):
             node = node.getparent()
         return node
 
@@ -1039,6 +1170,8 @@ class DocumentEditor:
         for hf in self.pkg.hf_parts:
             if not hf.created:
                 _walk_container(hf.root, f"{hf.label}.", blocks, 1, None, {"p": 0, "t": 0})
+        for label, box in text_boxes(self.pkg.body):  # same order as the oracle's parts
+            _walk_container(box, f"{label}.", blocks, 1, None, {"p": 0, "t": 0})
         return [(self._label(b.element), b.element) for b in blocks
                 if b.kind == "paragraph" and b.editable]
 
@@ -1205,13 +1338,30 @@ class DocumentEditor:
 
     # ----------------------------------------------------------- operations
     def apply(self, plan: EditPlan) -> ApplyResult:
+        boxes = {text_box_key(box): _c14n(box) for _, box in text_boxes(self.pkg.body)}
         for idx, op in enumerate(plan.operations):
             try:
                 self._apply_one(idx, op)
             except EditError as exc:
                 exc.op_index = idx
                 raise
+        self._sync_text_box_copies(boxes)
         return self.result
+
+    def _sync_text_box_copies(self, before: dict[tuple, bytes]) -> None:
+        """Word stores a text box twice: DrawingML (read by today's Word and LibreOffice) and
+        a VML copy for old readers. After an edit the VML copy gets the same content, so
+        every reader shows the same text (the verifier checks that they match)."""
+        for _, box in text_boxes(self.pkg.body):
+            if before.get(text_box_key(box)) == _c14n(box):
+                continue
+            copy_ = text_box_fallback(box)
+            if copy_ is None:
+                continue
+            for child in list(copy_):
+                copy_.remove(child)
+            for child in box:
+                copy_.append(copy.deepcopy(child))
 
     def _record(self, idx: int, kind: str, bid: str, before: str | None, after: str | None):
         self.result.changes.append(Change(idx, kind, bid, before, after))
@@ -1246,10 +1396,10 @@ class DocumentEditor:
                     )
                 problem = deletion_whitespace_problem(text, pos, pos + n)
                 if problem:
-                    raise EditError(
-                        f"Deleting {op.find!r} in {bid}: {problem}. Include exactly one "
-                        "adjacent space in `find`."
-                    )
+                    better = deletion_with_spaces(text, pos, pos + n)
+                    hint = (f"Use find={better!r} instead (it includes the spaces next to it)."
+                            if better else "Include the adjacent space(s) in `find`.")
+                    raise EditError(f"Deleting {op.find!r} in {bid}: {problem}. {hint}")
                 self._replace_range(el, pos, pos + n, "", bid)
 
             self._for_each_match(
@@ -1290,6 +1440,10 @@ class DocumentEditor:
             self._delete_images(idx, op)
         elif isinstance(op, DeleteTableRows):
             self._delete_table_rows(idx, op)
+        elif isinstance(op, ReorderTableRows):
+            self._reorder_table_rows(idx, op)
+        elif isinstance(op, SetShapeFill):
+            self._set_shape_fill(idx, op)
         elif isinstance(op, InsertTableRow):
             self._insert_table_row(idx, op)
         elif isinstance(op, DeleteTable):
@@ -1425,7 +1579,7 @@ class DocumentEditor:
         el = block.element
         self._require_pristine(el, op.block_id)
         view = paragraph_view(el)
-        allowed = {"TAB", "BR", "NBHYPHEN", "PAGE_BREAK"} | (
+        allowed = {"TAB", "BR", "NBHYPHEN", "PAGE_BREAK", "COLUMN_BREAK"} | (
             {"IMAGE"} if op.delete_images else set())
         blockers = sorted({pc.label or "protected" for pc in view.pieces
                            if pc.kind == "protected" and pc.label not in allowed})
@@ -1454,10 +1608,10 @@ class DocumentEditor:
         if ppr is not None and ppr.find(W.sectPr) is not None:
             raise EditError(f"{op.block_id} carries a section break and cannot be deleted.")
         parent = el.getparent()
-        if parent is not None and parent.tag in (qn("w:hdr"), qn("w:ftr")) \
+        if parent is not None and parent.tag in (qn("w:hdr"), qn("w:ftr"), TXBX) \
                 and len(parent.findall(W.p)) == 1:
-            raise EditError(f"{op.block_id} is the only paragraph of its header/footer; clear its "
-                            "text with delete_text instead.")
+            raise EditError(f"{op.block_id} is the only paragraph of its header/footer or text "
+                            "box; clear its text with delete_text instead.")
         if parent is not None and parent.tag == W.tc:
             paras = parent.findall(W.p)
             if len(paras) == 1:
@@ -1629,6 +1783,59 @@ class DocumentEditor:
                 _remove(tr)
                 self._record(idx, "delete_table_row", row_id, before, None)
 
+    def _set_shape_fill(self, idx: int, op: SetShapeFill) -> None:
+        node, host, label = find_drawing(self.pkg, self.index, op.target)
+        if not self._attached(host):
+            raise EditError(f"The paragraph holding {label} was removed earlier in this plan.")
+        if not recolor_drawing(node, op.color):
+            raise EditError(f"{label} has no filled area (it is transparent); to colour its "
+                            "text use format_text on the text box paragraph.")
+        self._touch(host)
+        self._record(idx, "set_shape_fill", self._label(host), None,
+                     f"{label}: fill #{op.color.upper()}")
+
+    def _reorder_table_rows(self, idx: int, op: ReorderTableRows) -> None:
+        if len(set(op.order)) != len(op.order):
+            raise EditError("reorder_table_rows: each row id may appear only once in `order`.")
+        resolved = [self._row(row_id) for row_id in op.order]
+        table = resolved[0][0]
+        if any(t is not table for t, _ in resolved):
+            raise EditError("reorder_table_rows works on one table at a time; use one operation "
+                            "per table.")
+        rows = [tr for _, tr in resolved]
+        for row_id, tr in zip(op.order, rows):
+            if any(True for _ in tr.iter(W.vMerge)):
+                raise EditError(f"Row {row_id} is part of a vertically merged cell; rows with "
+                                "merged cells cannot be reordered.")
+        current = table.findall(W.tr)
+        position = {id(tr): n for n, tr in enumerate(current)}
+        slots = sorted(rows, key=lambda tr: position[id(tr)])
+        if all(a is b for a, b in zip(slots, rows)):
+            raise EditError("Those rows are already in that order.")
+
+        def first_cell(tr: etree._Element) -> str:
+            p = tr.find(f"{W.tc}/{W.p}")
+            text = re.sub(r"⟦[^⟧]*⟧\s*", "", paragraph_view(p).text if p is not None else "")
+            text = text.strip(" -")
+            return text if len(text) <= 28 else text[:27].rstrip() + "…"
+
+        marks = []
+        for tr in slots:
+            mark = etree.Element("reorder-slot")
+            tr.addprevious(mark)
+            marks.append(mark)
+        for tr in rows:
+            table.remove(tr)
+        for mark, tr in zip(marks, rows):
+            mark.addprevious(tr)
+            table.remove(mark)
+        self._touch(table)
+        table_id = self._ids.get(table) or op.order[0].split(".")[0]
+        order = " / ".join(first_cell(tr) for tr in rows)
+        self._record(idx, "reorder_table_rows", table_id, None,
+                     f"{len(rows)} rows in a new order: "
+                     + (order if len(order) <= 160 else order[:159] + "…"))
+
     @staticmethod
     def _starts_vertical_merge(tr: etree._Element, rows: list[etree._Element],
                                doomed: set[int]) -> bool:
@@ -1791,11 +1998,28 @@ class DocumentEditor:
         for el in els:
             if el is target or any(a is el for a in target.iterancestors()):
                 raise EditError("The target is one of the blocks being moved.")
+            if el in self._page_breaks_at:
+                # A real failure: "move this to a new page at the end" inserted the break
+                # first, so the break stayed behind and the text landed with no break.
+                bid, where = self._page_breaks_at[el]
+                raise EditError(
+                    f"This plan puts a page break {where} {bid} and then moves {bid} away, so "
+                    "the break would stay behind. Move the blocks FIRST, then insert the page "
+                    f"break {where} {bid} (it is placed wherever {bid} is by then).")
             if self._has_section_break(el):
                 raise EditError(f"{self._label(el)} carries a section break and cannot move.")
+        if all(a.getnext() is b for a, b in zip(els, els[1:])) and (
+                (op.position == "after" and els[0].getprevious() is target)
+                or (op.position == "before" and els[-1].getnext() is target)):
+            raise EditError("Those blocks are already right there, so moving them changes "
+                            "nothing. To start them on a new page use insert_page_break alone.")
         sources = {id(el.getparent()): el.getparent() for el in els}
         texts = [paragraph_view(el).text if el.tag == W.p else f"table {self._label(el)}"
                  for el in els]
+        prev = els[0].getprevious()
+        if prev is not None and prev.tag == W.p and not any(prev is e for e in els) \
+                and paragraph_view(prev).text.strip() == PAGE_BREAK_TEXT:
+            self._left_breaks[els[0]] = prev
         for el in els:
             _remove(el)
         anchor = target
@@ -1863,8 +2087,9 @@ class DocumentEditor:
                                          for n in self.pkg.paragraph_styles.values())[:40])
                 raise EditError(f"There is no paragraph style {op.style!r} in this document. "
                                 f"Available: {names}.")
-        if not (style or op.align or op.remove_numbering):
-            raise EditError("set_paragraph_format needs style, align or remove_numbering.")
+        if not (style or op.align or op.remove_numbering or op.shading):
+            raise EditError("set_paragraph_format needs style, align, shading or "
+                            "remove_numbering.")
         for bid in dict.fromkeys(op.block_ids):
             el = self._block(bid).element
             ppr = el.find(W.pPr)
@@ -1877,9 +2102,18 @@ class DocumentEditor:
                 ppr_set(ppr, qn("w:jc"), JC[op.align])
             if op.remove_numbering:
                 ppr_set(ppr, W.numPr, None)
+            if op.shading:
+                ppr_set(ppr, qn("w:shd"), None)
+                if op.shading != "none":
+                    shd = shading_element(op.shading)
+                    rank = _PPR_RANK.get(shd.tag, len(_PPR_ORDER))
+                    at = next((i for i, c in enumerate(ppr)
+                               if _PPR_RANK.get(c.tag, len(_PPR_ORDER)) > rank), len(ppr))
+                    ppr.insert(at, shd)
             self._touch(el)
             label = ", ".join(x for x in (f"style={self.pkg.paragraph_styles.get(style, style)}"
                                           if style else "", f"align={op.align}" if op.align else "",
+                                          f"background={op.shading}" if op.shading else "",
                                           "no numbering" if op.remove_numbering else "") if x)
             text = paragraph_view(el).text
             self._record(idx, "set_paragraph_format", bid, text, f"{text[:80]} ({label})")
@@ -1962,14 +2196,31 @@ class DocumentEditor:
 
     def _insert_page_break(self, idx: int, op: InsertPageBreak) -> None:
         target = self._block(op.target_id, ("paragraph", "table")).element
+        left = self._left_breaks.get(target)
+        if op.position == "before" and left is not None and self._attached(left):
+            # A real failure: "I wanted it at the end" moved the text and added a new break,
+            # leaving the break from the previous request behind (two breaks, one orphaned).
+            raise EditError(
+                f"{self._label(left)} is a page break that stood right before {op.target_id} and "
+                "would stay behind at the old place. Move it together with the blocks (list it "
+                "first in move_blocks) instead of inserting a new page break.")
+        neighbour = target.getprevious() if op.position == "before" else target.getnext()
+        if any(e is not None and e.tag == W.p and paragraph_view(e).text.strip() == PAGE_BREAK_TEXT
+               for e in (target, neighbour)):
+            raise EditError(f"There is already a page break right {op.position} {op.target_id}; "
+                            "a second one would only add an empty page.")
         p_el = page_break_paragraph()
         if op.position == "after":
             target.addnext(p_el)
         else:
             target.addprevious(p_el)
         self._new_id(p_el)
+        self._page_breaks_at[target] = (op.target_id, op.position)
+        near = (paragraph_view(target).text if target.tag == W.p else "a table").strip()
+        near = near if len(near) <= 40 else near[:39] + "…"
+        # say where: the conversation history (and the next request) needs to know
         self._record(idx, "insert_page_break", f"{op.target_id} ({op.position})", None,
-                     "page break")
+                     f"page break {op.position} “{near}”")
 
     # ------------------------------------------------------------- columns
     def _regular_rows(self, table_id: str) -> tuple[etree._Element, list[list[etree._Element]]]:
@@ -2057,11 +2308,21 @@ class DocumentEditor:
             raise EditError("A section-break paragraph cannot go into a table.")
         template_t = (self._table_looks[self._block(op.table_like, ("table",)).element]
                       if op.table_like else None)
+        # Blank spacer lines would each take a cell and shift every following pair out of
+        # its column ("name | description" becoming "name | (empty)"): remove them instead.
+        blanks = [e for e in els if is_blank_paragraph(e)]
+        content = [e for e in els if not any(e is b for b in blanks)]
+        if not content:
+            raise EditError("blocks_to_table was given only blank paragraphs.")
+        for e in blanks:
+            self._require_pristine(e, self._label(e))
         tbl = new_table_skeleton(self.pkg, template_t, op.columns)
         widths = table_grid_widths(tbl)
         parent = els[0].getparent()
         els[0].addprevious(tbl)
-        cells: list[etree._Element | None] = list(els) + [None] * (-len(els) % op.columns)
+        for e in blanks:
+            parent.remove(e)
+        cells: list[etree._Element | None] = list(content) + [None] * (-len(content) % op.columns)
         for r in range(0, len(cells), op.columns):
             tr = new_table_row(False)
             for c, el in enumerate(cells[r:r + op.columns]):
@@ -2074,8 +2335,10 @@ class DocumentEditor:
         self._ensure_spacers(tbl, tbl)
         self._check_containers([parent])
         self.result.inserted += 1
+        dropped = f", {len(blanks)} blank line(s) removed" if blanks else ""
         self._record(idx, "blocks_to_table", self._label(els[0]), None,
-                     f"table {len(cells) // op.columns}x{op.columns} from {len(els)} block(s)")
+                     f"table {len(cells) // op.columns}x{op.columns} from {len(content)} "
+                     f"block(s){dropped}")
 
     # ------------------------------------------------------------ hyperlinks
     def _hyperlink_style(self, run: etree._Element) -> None:

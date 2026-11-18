@@ -221,7 +221,10 @@ def paragraph_view(p: etree._Element) -> ParagraphView:
                 if br_type in (None, "textWrapping") or tag == W.cr:
                     add("\n", "protected", run, child, container, prot or "BR")
                 else:
-                    add("⟦PAGE BREAK⟧", "protected", run, child, container, "PAGE_BREAK")
+                    if br_type == "column":  # moves the text to the next column, not page
+                        add("⟦COLUMN BREAK⟧", "protected", run, child, container, "COLUMN_BREAK")
+                    else:
+                        add("⟦PAGE BREAK⟧", "protected", run, child, container, "PAGE_BREAK")
             elif tag == W.noBreakHyphen:
                 add("-", "protected", run, child, container, prot or "NBHYPHEN")
             elif tag in (W.drawing, W.pict) or (
@@ -287,6 +290,7 @@ class Block:
     rows: int = 0
     cols: int = 0
     readonly_reason: str | None = None
+    host: str | None = None  # for a text box part: the id of the paragraph that holds it
 
 
 @dataclass
@@ -348,13 +352,68 @@ def _walk_container(
             _walk_container(child, prefix, out, depth, "inside a custom XML element", counters)
 
 
+TXBX = qn("w:txbxContent")
+_WPS_CNVPR = "{http://schemas.microsoft.com/office/word/2010/wordprocessingShape}cNvPr"
+_WP_DOCPR = qn("wp:docPr")
+
+
+def text_boxes(body: etree._Element) -> list[tuple[str, etree._Element]]:
+    """Editable text boxes in the body: ("tb1", w:txbxContent) in document order.
+
+    The VML copy Word keeps for old readers (inside mc:Fallback) is not listed: it is kept
+    in sync with the DrawingML copy. Text boxes inside content controls, custom XML or
+    another text box stay read-only, like the text around them.
+    """
+    out: list[tuple[str, etree._Element]] = []
+    for box in body.iter(TXBX):
+        if any(a.tag in (MC.Fallback, W.sdt, W.customXml, TXBX) for a in box.iterancestors()):
+            continue
+        out.append((f"tb{len(out) + 1}", box))
+    return out
+
+
+def text_box_key(box: etree._Element) -> tuple[str, str, int]:
+    """Identifies a text box across versions of the document, whatever moved around it:
+    the drawing's id, the shape's id inside a group, and its place in that drawing."""
+    drawing = next((a for a in box.iterancestors() if a.tag == W.drawing), None)
+    docpr = drawing.find(".//" + _WP_DOCPR) if drawing is not None else None
+    shape = next((a for a in box.iterancestors()
+                  if a.tag.endswith("}wsp") and a.find(_WPS_CNVPR) is not None), None)
+    shape_id = shape.find(_WPS_CNVPR).get("id", "") if shape is not None else ""
+    boxes = [b for b in drawing.iter(TXBX)] if drawing is not None else [box]
+    return (docpr.get("id", "") if docpr is not None else "", shape_id,
+            next((i for i, b in enumerate(boxes) if b is box), 0))
+
+
+def text_box_fallback(box: etree._Element) -> etree._Element | None:
+    """The VML copy of a DrawingML text box (same place in mc:Fallback), if there is one."""
+    alt = next((a for a in box.iterancestors() if a.tag == MC.AlternateContent), None)
+    if alt is None:
+        return None
+    choice, fallback = alt.find(MC.Choice), alt.find(MC.Fallback)
+    if choice is None or fallback is None:
+        return None
+    mine = list(choice.iter(TXBX))
+    theirs = list(fallback.iter(TXBX))
+    if len(mine) != len(theirs):
+        return None
+    k = next((i for i, b in enumerate(mine) if b is box), None)
+    return theirs[k] if k is not None else None
+
+
 def build_index(pkg: DocxPackage) -> DocumentIndex:
-    """Body blocks first (p0, t0, ...), then each header/footer part (hdr1.p0, ftr1.t0...)."""
+    """Body blocks first (p0, t0, ...), then each header/footer part (hdr1.p0, ftr1.t0...),
+    then each text box in the body (tb1.p0, ...)."""
     blocks: list[Block] = []
     _walk_container(pkg.body, "", blocks, 0, None, {"p": 0, "t": 0})
     for hf in pkg.hf_parts:
         blocks.append(Block(hf.label, "part", hf.root, depth=0))
         _walk_container(hf.root, f"{hf.label}.", blocks, 1, None, {"p": 0, "t": 0})
+    hosts = {id(b.element): b.id for b in blocks if b.kind == "paragraph"}
+    for label, box in text_boxes(pkg.body):
+        host = next((hosts[id(a)] for a in box.iterancestors() if id(a) in hosts), None)
+        blocks.append(Block(label, "part", box, depth=0, host=host))
+        _walk_container(box, f"{label}.", blocks, 1, None, {"p": 0, "t": 0})
     return DocumentIndex(blocks)
 
 
@@ -508,9 +567,38 @@ def protected_notes(view: ParagraphView) -> list[str]:
     return labels
 
 
+def paragraph_shading(pkg: DocxPackage, p: etree._Element) -> str | None:
+    """The paragraph's background colour (direct or from its style chain), as RRGGBB."""
+    def fill_of(ppr: etree._Element | None) -> str | None | bool:
+        shd = ppr.find(qn("w:shd")) if ppr is not None else None
+        if shd is None:
+            return False  # not set here
+        fill = (shd.get(qn("w:fill")) or "").upper()
+        return fill if re.fullmatch(r"[0-9A-F]{6}", fill) and shd.get(W.val) != "nil" else None
+    direct = fill_of(p.find(W.pPr))
+    if direct is not False:
+        return direct or None
+    ps = p.find(f"{W.pPr}/{qn('w:pStyle')}")
+    sid = ps.get(W.val) if ps is not None else None
+    seen: set[str] = set()
+    styles = pkg.style_elements
+    while sid and sid not in seen and sid in styles:
+        seen.add(sid)
+        found = fill_of(styles[sid].find(W.pPr))
+        if found is not False:
+            return found or None
+        based = styles[sid].find(qn("w:basedOn"))
+        sid = based.get(W.val) if based is not None else None
+    return None
+
+
 def describe_block(pkg: DocxPackage, block: Block, max_text: int | None = None) -> str:
     indent = "  " * block.depth
     if block.kind == "part":
+        if block.element.tag == TXBX:
+            where = f" in {block.host}" if block.host else ""
+            return (f"[{block.id}] TEXT BOX{where} (a shape's text; edit it like any "
+                    "paragraph) - its paragraphs follow")
         hf = next((h for h in pkg.hf_parts if h.root is block.element), None)
         kind = hf.kind.upper() if hf else "PART"
         uses = "; ".join(hf.uses) if hf else ""
@@ -534,6 +622,9 @@ def describe_block(pkg: DocxPackage, block: Block, max_text: int | None = None) 
         meta += f", list level {lvl}"
     line = f"{indent}[{block.id}] ({meta}) {json.dumps(text, ensure_ascii=False)}"
     notes = formatting_notes(view) + protected_notes(view)
+    fill = paragraph_shading(pkg, block.element)
+    if fill:
+        notes.insert(0, f"shading #{fill}")  # a coloured box behind the paragraph
     if not block.editable:
         notes.append(f"READ-ONLY: {block.readonly_reason}")
     if notes:

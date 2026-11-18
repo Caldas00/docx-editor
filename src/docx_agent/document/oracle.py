@@ -22,7 +22,15 @@ from typing import Literal
 
 from lxml import etree
 
-from .model import Piece, build_index, image_info, paragraph_view, run_props
+from .model import (
+    Piece,
+    build_index,
+    image_info,
+    paragraph_view,
+    run_props,
+    text_box_key,
+    text_boxes,
+)
 from .ns import W, qn
 from .ops import (
     _ROW_ID,
@@ -47,15 +55,19 @@ from .ops import (
     MergeParagraphs,
     MoveBlocks,
     RemoveHyperlink,
+    ReorderTableRows,
     ReplaceText,
     RestyleText,
     SetHyperlinkUrl,
     SetParagraphFormat,
+    SetShapeFill,
     SplitParagraph,
     cell_template_paragraph,
     find_all,
+    find_drawing,
     first_free_docpr_id,
     image_selected,
+    is_blank_paragraph,
     merge_separator_needed,
     normalise_image_refs,
     normalise_prop,
@@ -113,12 +125,19 @@ def document_stream(pkg: DocxPackage) -> list[StreamItem]:
 
 
 def part_streams(pkg: DocxPackage) -> dict[str, list[StreamItem]]:
-    """"body" plus every original header/footer part (keyed by part name)."""
+    """"body", every original header/footer part (keyed by part name), then every text box
+    in the body (keyed "textbox:<docPr id>:<shape id>:<n>", stable across versions)."""
     out = {"body": stream_of(pkg.body)}
     for hf in pkg.hf_parts:
         if not hf.created:
             out[hf.part_name] = stream_of(hf.root)
+    for _, box in text_boxes(pkg.body):
+        out[text_box_name(box)] = stream_of(box)
     return out
+
+
+def text_box_name(box: etree._Element) -> str:
+    return "textbox:" + ":".join(map(str, text_box_key(box)))
 
 
 @dataclass
@@ -159,6 +178,7 @@ class Oracle:
     def __init__(self, pkg: DocxPackage) -> None:
         self.pkg = pkg
         index = build_index(pkg)
+        self.index = index
         ids = {b.element: b for b in index.blocks}
         self.lists: dict[str, list[Expected]] = {}
         self.pieces: dict[etree._Element, list[Piece]] = {}
@@ -468,6 +488,30 @@ class Oracle:
             self.removed.append(row.element)
             del lst[i:j]
 
+    def _op_reorder_table_rows(self, op: ReorderTableRows) -> None:
+        spans = [self._span(self._row(row_id)) for row_id in op.order]
+        lst = spans[0][0]
+        segments = [lst[i:j] for _, i, j in spans]  # in their new order
+        slots = sorted(spans, key=lambda s: s[1])
+        for (_, i, _j), seg in zip(slots, segments):
+            if seg[0] is not lst[i]:
+                seg[0].spec["moved"] = True  # the row landed somewhere else
+        for k in reversed(range(len(slots))):  # back to front keeps earlier indices valid
+            _, i, j = slots[k]
+            lst[i:j] = segments[k]
+
+    def _op_set_shape_fill(self, op: SetShapeFill) -> None:
+        node, host, _ = find_drawing(self.pkg, self.index, op.target)
+        e = self._entry(self._pid[host])
+        span = next(((pc.start, pc.end) for pc in paragraph_view(host).pieces if pc.node is node),
+                    None)
+        if span is None:
+            raise OracleError(f"oracle: drawing {op.target} not found in its paragraph")
+        for oc in e.chars:
+            if oc.src is host and oc.origin is not None and span[0] <= oc.origin < span[1]:
+                oc.forced["fill"] = op.color.upper()
+        e.modified = True
+
     def _op_insert_table_row(self, op: InsertTableRow) -> None:
         anchor = self._row(op.row)
         template = (self._row(op.format_like_row) if op.format_like_row else anchor).element
@@ -540,11 +584,19 @@ class Oracle:
         template_t = self._entry(op.table_like, ("tbl",)).element if op.table_like else None
         spans = self._segments(op.block_ids)
         lst = spans[0][0]
-        moved = [lst[i:j] for _, i, j in spans]
         at = spans[0][1]
+        moved: list[list[Expected]] = []
+        for _, i, j in spans:
+            e = lst[i]
+            if j == i + 1 and e.kind == "p" and not e.chars and is_blank_paragraph(e.element):
+                self._forget([e])  # blank spacer lines are removed, not given a cell
+                self.removed.append(e.element)
+            else:
+                moved.append(lst[i:j])
         for _, i, j in sorted(spans, key=lambda s: -s[1]):
             del lst[i:j]
         table = self._new_table(op.columns, template_t)
+        table.spec["converted"] = True
         new: list[Expected] = [table]
         cells: list[list[Expected] | None] = moved + [None] * (-len(moved) % op.columns)
         for r in range(0, len(cells), op.columns):
@@ -637,6 +689,8 @@ class Oracle:
                 e.ppr_set["align"] = op.align
             if op.remove_numbering:
                 e.ppr_set["remove_numbering"] = True
+            if op.shading:
+                e.ppr_set["shading"] = op.shading.upper()
             e.modified = True
 
     def _op_split_paragraph(self, op: SplitParagraph) -> None:

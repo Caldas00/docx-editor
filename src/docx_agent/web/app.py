@@ -6,6 +6,7 @@ Local demo: sessions live in memory and in ``.runs/web``; there is no auth.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -26,9 +27,10 @@ from pydantic import BaseModel, Field
 from ..config import get_settings
 from ..conversation import format_history
 from ..document import DocxError, DocxPackage, EditPlan
-from ..document.render import render_preview, render_redline
+from ..document.render import page_setup, render_preview, render_redline
 from ..pricing import estimate_cost
 from ..service import EditOutcome, EditService
+from . import exact
 
 STATIC = Path(__file__).parent / "static"
 ROOT = Path(__file__).resolve().parents[3]
@@ -73,11 +75,6 @@ SAMPLE_INFO: dict[str, dict[str, Any]] = {
         ],
     },
 }
-GENERIC_SUGGESTIONS = [
-    "Make all the headings dark blue.",
-    "Fix the typo in the second paragraph.",
-    "Remove the last row of the first table.",
-]
 
 
 @dataclass
@@ -183,10 +180,11 @@ def _state(s: DocSession, view_version: int | None = None) -> dict[str, Any]:
         "version": v_idx,
         "latest": len(s.versions) - 1,
         "preview_html": render_preview(pkg),
+        "page": page_setup(pkg),
         "redline_html": version.redline_html,
         "turn": version.turn,
         "turns": s.turns,
-        "suggestions": sample["suggestions"] if sample else GENERIC_SUGGESTIONS,
+        "suggestions": sample["suggestions"] if sample else [],
     }
 
 
@@ -219,9 +217,18 @@ def _record(s: DocSession, turn: dict[str, Any], outcome: EditOutcome, seconds: 
 
 
 # ---------------------------------------------------------------- routes
+def _asset_version(name: str) -> str:
+    return hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:10]
+
+
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    return (STATIC / "index.html").read_text(encoding="utf-8")
+def index() -> HTMLResponse:
+    # Browsers (Safari especially) keep serving a stale app.css/app.js from cache after
+    # an update. Version the URLs by content and never cache the page itself.
+    page = (STATIC / "index.html").read_text(encoding="utf-8")
+    for name in ("app.css", "app.js"):
+        page = page.replace(f'/static/{name}"', f'/static/{name}?v={_asset_version(name)}"')
+    return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/config")
@@ -229,7 +236,8 @@ def config() -> dict[str, Any]:
     samples = [{"name": name, "title": info["title"]} for name, info in SAMPLE_INFO.items()
                if (SAMPLES_DIR / name).exists()]
     return {"model": get_settings().model, "samples": samples,
-            "has_api_key": bool(os.getenv("OPENAI_API_KEY"))}
+            "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
+            "exact_pages": exact.engine()}  # "libreoffice" / None
 
 
 @app.post("/api/sessions/sample")
@@ -288,6 +296,23 @@ def undo(sid: str) -> dict[str, Any]:
     if version.turn is not None:
         s.turns[version.turn]["undone"] = True
     return _state(s)
+
+
+@app.get("/api/sessions/{sid}/pdf")
+def version_pdf(sid: str, version: int | None = None) -> FileResponse:
+    """The version laid out by LibreOffice (see exact.py), cached next to the version."""
+    s = _session(sid)
+    idx = len(s.versions) - 1 if version is None else version
+    if not 0 <= idx < len(s.versions):
+        raise HTTPException(404, "Unknown version.")
+    path = s.versions[idx].path
+    pdf = path.with_suffix(".pdf")
+    if not pdf.exists():
+        if exact.engine() is None:
+            raise HTTPException(501, "LibreOffice is not installed, so exact pages are off.")
+        if not exact.to_pdf(path, pdf):
+            raise HTTPException(502, "LibreOffice could not lay out this document.")
+    return FileResponse(pdf, media_type="application/pdf")
 
 
 @app.get("/api/sessions/{sid}/download")

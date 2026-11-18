@@ -15,6 +15,7 @@ from typing import Any
 MAX_TURNS = 12
 MAX_CHANGES = 8
 MAX_TEXT = 160
+MAX_SELECTION = 1500  # "it" in the next message usually means this text: keep enough of it
 
 _OP_WORDS = {
     "replace_text": "changed", "delete_text": "deleted text", "insert_text": "inserted text",
@@ -22,6 +23,7 @@ _OP_WORDS = {
     "format_text": "formatted", "restyle_text": "restyled", "delete_images": "removed pictures",
     "delete_table_row": "removed table row", "insert_table_row": "added table row",
     "delete_table": "removed table", "insert_table": "added table",
+    "reorder_table_rows": "reordered rows", "set_shape_fill": "recoloured shape",
     "move_blocks": "moved", "duplicate_blocks": "duplicated", "set_paragraph_format":
     "changed paragraph format", "split_paragraph": "split", "merge_paragraphs": "merged",
     "insert_page_break": "added page break", "insert_table_column": "added column",
@@ -31,10 +33,10 @@ _OP_WORDS = {
 }
 
 
-def _q(text: str | None) -> str:
+def _q(text: str | None, limit: int = MAX_TEXT) -> str:
     text = (text or "").replace("\n", " ").strip()
-    if len(text) > MAX_TEXT:
-        text = text[:MAX_TEXT] + "…"
+    if len(text) > limit:
+        text = text[:limit] + "…"
     return json.dumps(text, ensure_ascii=False)
 
 
@@ -59,7 +61,7 @@ def format_history(turns: list[dict[str, Any]]) -> str:
         user = f"{n}. User: {turn.get('instruction', '').strip()}"
         sel = turn.get("selection") or {}
         if (sel.get("text") or "").strip():
-            user += f"  [with this text selected: {_q(sel['text'])}]"
+            user += f"  [with this text selected: {_q(sel['text'], MAX_SELECTION)}]"
         lines.append(user)
         status = turn.get("status")
         message = (turn.get("message") or "").strip()

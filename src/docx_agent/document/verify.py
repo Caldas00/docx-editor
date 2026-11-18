@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 
 from lxml import etree
 
-from .model import paragraph_view, run_props
+from .model import TXBX, paragraph_view, run_props, text_box_fallback, text_boxes
 from .ns import MC, R_ID, W, qn
 from .ops import (
     JC,
@@ -46,11 +46,12 @@ from .ops import (
     new_table_skeleton,
     normalise_prop,
     page_break_paragraph,
+    recolor_drawing,
     sanitize_copy,
     table_grid_widths,
     without_sectpr,
 )
-from .oracle import Expected, Oracle, OracleError, StreamItem, replay, stream_of
+from .oracle import Expected, Oracle, OracleError, StreamItem, replay, stream_of, text_box_name
 from .package import (
     FOOTER_CT,
     FOOTER_REL,
@@ -116,8 +117,32 @@ def _shallow_signature(el: etree._Element, skip: tuple[str, ...]) -> str:
     return _h(b"".join(parts))
 
 
-def item_signature(item: StreamItem) -> str:
-    el = item.element
+def _blank_boxes(el: etree._Element, boxes: set[etree._Element]) -> etree._Element:
+    """A copy of `el` with the text boxes in `boxes` emptied: their content is its own
+    part, checked block by block (and their VML copy checked against it)."""
+    if not boxes or el.find(".//" + TXBX) is None:
+        return el
+    work = copy.deepcopy(el)
+    for orig, dup in zip(el.iter(TXBX), work.iter(TXBX)):
+        if orig in boxes:  # the elements themselves: id() of lxml proxies can be reused
+            for child in list(dup):
+                dup.remove(child)
+    return work
+
+
+def editable_boxes(pkg: DocxPackage) -> set[etree._Element]:
+    """Text boxes that are their own part, and their VML copies."""
+    out: set[etree._Element] = set()
+    for _, box in text_boxes(pkg.body):
+        out.add(box)
+        copy_ = text_box_fallback(box)
+        if copy_ is not None:
+            out.add(copy_)
+    return out
+
+
+def item_signature(item: StreamItem, boxes: set[etree._Element] | None = None) -> str:
+    el = _blank_boxes(item.element, boxes) if boxes and item.kind == "p" else item.element
     if item.kind == "tbl":
         return "tbl:" + _shallow_signature(el, (W.tr,))
     if item.kind == "tr":
@@ -195,6 +220,7 @@ class CharInfo:
     run: etree._Element | None
     key: str  # rPr + container + (protected node identity)
     protected: bool
+    node: etree._Element | None = None  # the protected element (a drawing, a field...)
 
 
 def _without_docpr_ids(node: etree._Element) -> etree._Element:
@@ -207,14 +233,26 @@ def _without_docpr_ids(node: etree._Element) -> etree._Element:
     return node
 
 
+def node_hash(node: etree._Element) -> str:
+    """Identity of a protected element. A text box's text is its own part (checked block by
+    block), so a drawing is compared without it; drawing ids are bookkeeping."""
+    if node.find(".//" + TXBX) is not None:
+        node = copy.deepcopy(node)
+        for box in node.iter(TXBX):
+            for child in list(box):
+                box.remove(child)
+    return _h(c14n(_without_docpr_ids(node)))
+
+
 def char_infos(p: etree._Element) -> list[CharInfo]:
     out: list[CharInfo] = []
     for pc in paragraph_view(p).pieces:
         base = _rpr_key(pc.run) + "@" + _container_sig(pc.run, p)
         if pc.kind == "protected":
-            base += "#" + (pc.label or "") + ":" + _h(c14n(_without_docpr_ids(pc.node)))
+            base += "#" + (pc.label or "") + ":" + node_hash(pc.node)
         for ch in pc.text:
-            out.append(CharInfo(ch, pc.run, base, pc.kind == "protected"))
+            out.append(CharInfo(ch, pc.run, base, pc.kind == "protected",
+                                pc.node if pc.kind == "protected" else None))
     return out
 
 
@@ -236,7 +274,14 @@ _COUNTED = {
 
 
 def count_elements(root: etree._Element) -> dict[str, int]:
-    return {name: sum(1 for tag in tags for _ in root.iter(tag)) for name, tags in _COUNTED.items()}
+    """Counts, leaving out the VML copies inside mc:Fallback (a text box edit updates that
+    copy too; counting both would count every link or field in it twice)."""
+    fallbacks = set(root.iter(MC.Fallback))  # elements, kept alive (not id()s)
+
+    def visible(el: etree._Element) -> bool:
+        return not fallbacks or not any(a in fallbacks for a in el.iterancestors())
+    return {name: sum(1 for tag in tags for el in root.iter(tag) if visible(el))
+            for name, tags in _COUNTED.items()}
 
 
 # ------------------------------------------------------------------- verify
@@ -341,6 +386,7 @@ def _check_parts(before: DocxPackage, after: DocxPackage, oracle: Oracle, plan: 
 
 def _actual_streams(after: DocxPackage, oracle: Oracle) -> dict[str, list[StreamItem] | None]:
     by_name = {hf.part_name: hf.root for hf in after.hf_parts}
+    by_name |= {text_box_name(box): box for _, box in text_boxes(after.body)}
     out: dict[str, list[StreamItem] | None] = {}
     for name in oracle.lists:
         if name == "body":
@@ -360,6 +406,8 @@ def _expected_ppr(exp: Expected) -> tuple[bytes, tuple[str, ...]]:
         drop.append(qn("w:jc"))
     if exp.ppr_set.get("remove_numbering"):
         drop.append(W.numPr)
+    if "shading" in exp.ppr_set:
+        drop.append(qn("w:shd"))
     if exp.before is not None:
         base = exp.before.element.find(W.pPr)
     elif exp.copy_of is not None:
@@ -377,6 +425,14 @@ def _ppr_values_ok(exp: Expected, ppr: etree._Element | None) -> bool:
         return False
     if "align" in exp.ppr_set and val(qn("w:jc")) != JC[exp.ppr_set["align"]]:
         return False
+    if "shading" in exp.ppr_set:
+        shd = ppr.find(qn("w:shd")) if ppr is not None else None
+        want = exp.ppr_set["shading"]
+        if want == "NONE" and shd is not None:
+            return False
+        if want != "NONE" and (shd is None or shd.get(qn("w:fill"), "").upper() != want
+                               or shd.get(W.val) != "clear"):
+            return False
     return not (exp.ppr_set.get("remove_numbering") and ppr is not None
                 and ppr.find(W.numPr) is not None)
 
@@ -421,6 +477,13 @@ def _char_check(exp: Expected, act_el: etree._Element, after: DocxPackage,
             continue
         checked += 1
         bc = infos(oc.src)[oc.origin]
+        if set(oc.forced) == {"fill"}:  # a shape recoloured: exactly that, nothing else
+            want = copy.deepcopy(bc.node)
+            recolor_drawing(want, oc.forced["fill"])
+            if bc.node is None or ac.key != bc.key.rsplit(":", 1)[0] + ":" + node_hash(want):
+                return f"shape fill not applied cleanly at {oc.ch!r}", checked
+            allowed.add(ac.key)
+            continue
         if oc.forced:
             drop = {t for k in oc.forced for t in _PROP_TAGS[k]}
             linky = "link" in oc.forced or "unlink" in oc.forced
@@ -491,13 +554,29 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
     # 4. untouched blocks are identical -----------------------------------------
     untouched_bad: list[str] = []
     n_untouched = 0
+    b_boxes, a_boxes = editable_boxes(before), editable_boxes(after)
     for exp, act in pairs:
         if exp.before is None or exp.modified:
             continue
         n_untouched += 1
-        act_item = StreamItem(act.kind, _strip_refs(act.element, new_rel_ids), act.owner)
-        if item_signature(exp.before) != item_signature(act_item):
+        act_el = _blank_boxes(act.element, a_boxes) if act.kind == "p" else act.element
+        act_item = StreamItem(act.kind, _strip_refs(act_el, new_rel_ids), act.owner)
+        if item_signature(exp.before, b_boxes) != item_signature(act_item):
             untouched_bad.append(exp.block_id or exp.kind)
+    # a text box's VML copy: unchanged with the box, or the same content as the edited box
+    before_boxes = {text_box_name(b): b for _, b in text_boxes(before.body)}
+    for _, box in text_boxes(after.body):
+        name = text_box_name(box)
+        old = before_boxes.get(name)
+        copy_after = text_box_fallback(box)
+        copy_before = text_box_fallback(old) if old is not None else None
+        if old is None or copy_after is None:
+            continue
+        edited = c14n(old) != c14n(box)
+        ok = (b"".join(map(c14n, copy_after)) == b"".join(map(c14n, box))) if edited \
+            else c14n(copy_after) == c14n(copy_before)
+        if not ok:
+            untouched_bad.append(f"{name} (its VML copy)")
     report.add("Untouched blocks are XML-identical", not untouched_bad,
                f"{n_untouched} blocks compared" if not untouched_bad else
                f"changed unexpectedly: {', '.join(untouched_bad[:8])}")
@@ -644,6 +723,9 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
     # 9. structural sanity ---------------------------------------------------------
     sane = []
     roots_after = [after.body] + [hf.root for hf in after.hf_parts]
+    for _, box in text_boxes(after.body):
+        if box.find(W.p) is None:
+            sane.append("a text box has no paragraph")
     for root in roots_after:
         for tc in root.iter(W.tc):
             kids = [c for c in tc if c.tag in (W.p, W.tbl)]

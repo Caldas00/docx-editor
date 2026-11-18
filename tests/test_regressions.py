@@ -122,6 +122,5 @@ def test_deleted_cell_paragraph_is_shown_in_its_own_cell():
 
 
 def test_samples_command_runs_without_dev_dependencies(tmp_path: Path):
-    from docx_agent.samples import write_samples
-
-    assert len(write_samples(tmp_path)) == 4
+    from docx_agent.samples import SAMPLES, write_samples
+    assert len(write_samples(tmp_path)) == len(SAMPLES)

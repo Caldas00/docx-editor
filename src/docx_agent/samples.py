@@ -384,11 +384,65 @@ def build_api_reference() -> bytes:
     return buf.getvalue()
 
 
+_TB_NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+          'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+          'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+          'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+          'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+          'xmlns:v="urn:schemas-microsoft-com:vml"')
+
+
+def _text_box_run(lines: list[str], fill: str, docpr: int, color: str = "FFFFFF",
+                  width_cm: float = 16.0, height_cm: float = 1.2):
+    """A run holding a filled text box, written like Word: DrawingML in mc:Choice and a VML
+    copy with the same text in mc:Fallback (python-docx has no API for shapes)."""
+    from lxml import etree
+    cx, cy = int(width_cm * 360000), int(height_cm * 360000)
+    paras = "".join(f'<w:p><w:r><w:rPr><w:color w:val="{color}"/><w:sz w:val="24"/></w:rPr>'
+                    f"<w:t>{line}</w:t></w:r></w:p>" for line in lines)
+    xml = (f'<w:r {_TB_NS}><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing>'
+           f'<wp:inline><wp:extent cx="{cx}" cy="{cy}"/><wp:docPr id="{docpr}" '
+           f'name="Box {docpr}"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/'
+           'office/word/2010/wordprocessingShape"><wps:wsp><wps:cNvPr id="1" name="box"/>'
+           f'<wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+           f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr '
+           f'val="{fill}"/></a:solidFill></wps:spPr><wps:txbx><w:txbxContent>{paras}'
+           '</w:txbxContent></wps:txbx><wps:bodyPr anchor="ctr"/></wps:wsp></a:graphicData>'
+           '</a:graphic></wp:inline></w:drawing></mc:Choice><mc:Fallback><w:pict>'
+           f'<v:rect style="width:{width_cm}cm;height:{height_cm}cm" fillcolor="#{fill}">'
+           f"<v:textbox><w:txbxContent>{paras}</w:txbxContent></v:textbox></v:rect></w:pict>"
+           "</mc:Fallback></mc:AlternateContent></w:r>")
+    return etree.fromstring(xml)
+
+
+def build_travel_receipt() -> bytes:
+    """A synthetic e-ticket laid out with text boxes, like documents converted from PDF:
+    a coloured banner and flight bands whose text lives inside shapes."""
+    doc = Document()
+    doc.styles["Normal"].font.name = "Arial"
+    doc.add_paragraph("Passenger: Example Traveller (ADT)    Booking ref: ABC123")
+    banner = doc.add_paragraph()
+    banner._p.append(_text_box_run(["ELECTRONIC TICKET RECEIPT"], "4E9A2E", 101))
+    doc.add_paragraph("At check-in, you must show a photo ID.")
+    band = doc.add_paragraph()
+    band._p.append(_text_box_run(["NORTHVILLE CENTRAL AIRPORT", "Terminal 1"], "E7E6E6", 102,
+                                 color="000000", height_cm=1.6))
+    doc.add_paragraph("Class: ECONOMY. Baggage: 1PC.")
+    band2 = doc.add_paragraph()
+    band2._p.append(_text_box_run(["SOUTHPORT AIRPORT", "Terminal 2"], "E7E6E6", 103,
+                                  color="000000", height_cm=1.6))
+    doc.add_paragraph("All names, codes and places in this document are fictional.")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 SAMPLES = {
     "session_note.docx": build_session_note,
     "referral_letter.docx": build_referral_letter,
     "intake_form.docx": build_intake_form,
     "api_reference.docx": build_api_reference,
+    "travel_receipt.docx": build_travel_receipt,
 }
 
 

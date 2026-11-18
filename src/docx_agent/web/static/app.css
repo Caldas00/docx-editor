@@ -67,7 +67,7 @@ button, input, textarea { font: inherit; color: inherit; }
 .sample-row button:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ----------------------------------------------------------------- workspace */
-.workspace { display: grid; grid-template-columns: minmax(0, 1fr) 420px; height: calc(100vh - 52px); }
+.workspace { display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 32vw, 420px); height: calc(100vh - 52px); }
 .viewer { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 .viewer-toolbar {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
@@ -105,33 +105,45 @@ button, input, textarea { font: inherit; color: inherit; }
 .legend-moved { border-left: 3px solid #3b82f6; padding-left: 5px; }
 
 /* --------------------------------------------------------------------- paper */
-.paper-wrap { flex: 1; overflow: auto; padding: 24px 20px 64px; }
+.doc-area { flex: 1; display: flex; min-height: 0; }
+/* the rail on the right replaces the native scrollbar */
+.paper-wrap { flex: 1; min-width: 0; overflow: auto; padding: 24px 20px 64px; scrollbar-width: none; }
+.paper-wrap::-webkit-scrollbar { display: none; }
 .paper {
   max-width: 816px; min-height: 1000px; margin: 0 auto; background: #fff; box-shadow: var(--shadow-paper); border-radius: 2px;
-  padding: 64px 76px; font-family: Calibri, Carlito, "Segoe UI", Arial, sans-serif; font-size: 11pt; line-height: 1.38; color: #111;
+  padding: 64px 76px; font-family: Calibri, Carlito, "Segoe UI", Arial, sans-serif; font-size: 11pt; line-height: 1.17; color: #000;
 }
-.paper .para { margin: 0 0 8pt; min-height: 1em; overflow-wrap: anywhere; }
-.paper h1.title { font-size: 26pt; font-weight: 400; letter-spacing: -.01em; margin: 0 0 14pt; color: #17365d; border-bottom: 1px solid #4f81bd; padding-bottom: 4pt; }
-.paper h2 { font-size: 14pt; font-weight: 600; color: #2f5496; margin: 16pt 0 6pt; }
-.paper h3 { font-size: 12.5pt; font-weight: 600; color: #2f5496; margin: 12pt 0 4pt; }
-.paper h4, .paper h5, .paper h6 { font-size: 11pt; font-weight: 600; color: #2f5496; margin: 10pt 0 4pt; }
-.paper .quote { font-style: italic; color: #2f5496; border-left: 3px solid #4f81bd; padding-left: 10px; }
-.paper .list-item { position: relative; padding-left: 22px; margin-bottom: 3pt; }
-.paper .list-item.lvl-1 { margin-left: 22px; }
-.paper .list-item.bulleted::before { content: "•"; position: absolute; left: 6px; }
-.paper { counter-reset: num; }
-.paper .list-item.numbered { counter-increment: num; }
-.paper .list-item.numbered::before { content: counter(num) "."; position: absolute; left: 0; }
-.paper .tab { display: inline-block; width: 36px; }
+/* The document's own formatting comes inline from the server (styles, numbering, borders).
+   These rules only reset the browser's defaults and draw what has no inline style. */
+.paper .para { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }  /* Word keeps runs of spaces */
+.paper .num-label { display: inline-block; text-indent: 0; font-style: normal; box-sizing: border-box; padding-right: 0.4em; }
+.paper .tab { display: inline-block; width: 48px; }
+.paper .para.has-fill { display: flex; align-items: baseline; }
+.paper .para.has-fill > a.link { display: contents; }
+.paper .tab-fill { flex: 1; min-width: 12px; align-self: stretch; margin: 0 2px; }
+.paper .para.leader-dot .tab-fill { border-bottom: 1.5px dotted currentColor; }
+.paper .para.leader-hyphen .tab-fill { border-bottom: 1px dashed currentColor; }
+.paper .para.leader-underscore .tab-fill { border-bottom: 1px solid currentColor; }
 .paper .page-break { display: block; border-top: 1px dashed #c3c8ce; margin: 16px 0; }
-.paper .field { border-bottom: 1px dotted #9aa3ad; }
-.paper .link, .paper a { color: #0563c1; text-decoration: underline; }
+.paper .link, .paper a { color: inherit; text-decoration: inherit; }
 .paper img { max-width: 100%; height: auto; vertical-align: middle; }
-.paper .img-placeholder, .paper .shape { display: inline-block; padding: 2px 6px; background: #f1f3f5; color: var(--faint); font: 11px var(--font); border-radius: 4px; }
-.paper table.doc-table { border-collapse: collapse; width: 100%; margin: 4pt 0 10pt; }
-.paper table.doc-table td { border: 1px solid #b7bec6; padding: 4px 7px; vertical-align: top; }
-.paper table.doc-table td .para { margin: 0; }
-
+.paper .img-placeholder { display: inline-block; padding: 2px 6px; background: #f1f3f5; color: var(--faint); font: 11px var(--font); border-radius: 4px; }
+.paper table.doc-table { border-collapse: collapse; }
+.paper .section-cols { display: flex; align-items: flex-start; }
+.paper .section-cols.flow { display: block; }
+.paper .section-cols > .col { display: flex; flex-direction: column; min-width: 0; }
+.paper table.doc-table td { vertical-align: top; }
+/* text boxes, lines and floating pictures */
+.paper .textbox { display: inline-flex; flex-direction: column; vertical-align: top; box-sizing: border-box; padding: 4.8px 9.6px; text-indent: 0; overflow: visible; white-space: normal; }
+.paper .drawing { display: inline-block; position: relative; vertical-align: bottom; text-indent: 0; white-space: normal; }
+.paper .shape-group { display: block; position: relative; }
+.paper .shape-part { position: absolute; display: flex; }
+.paper .shape-part > .textbox, .paper .shape-part > img { width: 100% !important; height: 100% !important; }
+.paper .anchored > .shape-group, .paper .floating > .shape-group { position: relative; }
+.paper .shape-line { display: inline-block; vertical-align: middle; height: 0; }
+.paper .anchored { position: absolute; z-index: 1; text-indent: 0; }
+.paper .floating { display: inline-block; margin: 0 9px 4px; text-indent: 0; }
+.paper .floating.block { display: block; margin: 4px 0; }
 /* headers / footers */
 .paper .hf { border: 1px dashed #c7cdd4; border-radius: 4px; padding: 6px 10px 2px; margin: 0 0 16pt; position: relative; color: #3a4148; }
 .paper .hf + .para, .paper .para + .hf, .paper .doc-table + .hf { margin-top: 18pt; }
@@ -139,6 +151,30 @@ button, input, textarea { font: inherit; color: inherit; }
 .paper .hf.block-ins { border-color: #22c55e; background: #f0fbf3; box-shadow: none; }
 .paper .page-break::after { content: "page break"; position: absolute; left: 50%; transform: translate(-50%, -50%); background: #fff; padding: 0 6px; font: 10px var(--font); color: var(--faint); }
 .paper .page-break { position: relative; }
+
+/* ---------------------------------------------------- pages (Word's print layout) */
+/* While measuring, the content is one column as wide as a page's text area. */
+.paper.measuring { max-width: none; min-height: 0; padding: 0; margin: 0 auto; background: transparent; box-shadow: none; visibility: hidden; }
+.paper.paged { max-width: none; min-height: 0; padding: 0; background: transparent; box-shadow: none; border-radius: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 22px; width: max-content; margin: 0 auto; }
+.page { position: relative; flex: none; box-sizing: border-box; background: #fff; box-shadow: var(--shadow-paper); border-radius: 1px; }
+.page-body { position: relative; display: flex; flex-direction: column; }  /* Word adds space before/after; it never collapses */
+.paper.measuring { display: flex; flex-direction: column; }
+.page-body > table, .paper.measuring > table { flex: none; }
+.page-hf { position: absolute; color: #4b5563; }
+.paper .page-hf .hf { border: 0; padding: 0; margin: 0; background: none; color: inherit; }
+.paper .page-hf .hf-label { display: none; }
+.paper .page-hf .hf.block-ins { background: #f0fbf3; box-shadow: -6px 0 0 #fff, -9px 0 0 #22c55e; }
+.paper .page-hf .para { margin: 0; }
+.page-num { position: absolute; right: 10px; bottom: 6px; font: 10px var(--font); color: #b0b7bf; user-select: none; }
+.paper .para.pb-only { display: none; }  /* the break is the edge of the sheet now */
+.paper.paged .page-break { border-top: 0; margin: 0; }
+.paper.paged .page-break::after { content: none; }
+.page.page-new { box-shadow: var(--shadow-paper), -4px 0 0 #22c55e; }
+.page.page-new::before { content: "new page"; position: absolute; top: 8px; left: 10px; font: 600 10px var(--font); color: #15803d; background: #dcfce7; padding: 1px 6px; border-radius: 999px; }
+.paper .block-del .page-break, .paper del .page-break { border-top: 1px dashed #ef4444; margin: 10px 0; }
+.paper .block-del .page-break::after, .paper del .page-break::after { content: "page break removed"; color: #b91c1c; }
+.paper table.doc-table.continued { margin-top: 0; }
 
 /* redline marks */
 ins, del { text-decoration: none; border-radius: 2px; }
@@ -149,10 +185,63 @@ del img { opacity: .45; outline: 2px solid #ef4444; }
 .paper .block-ins { box-shadow: -10px 0 0 #fff, -13px 0 0 #22c55e; }
 .paper .block-del { box-shadow: -10px 0 0 #fff, -13px 0 0 #ef4444; opacity: .85; }
 .paper .block-moved { box-shadow: -10px 0 0 #fff, -13px 0 0 #3b82f6; }
+.paper .block-fmt { box-shadow: -10px 0 0 #fff, -13px 0 0 #818cf8; }
 .paper tr.row-ins td { background: #f0fbf3; box-shadow: inset 3px 0 0 #22c55e; }
 .paper tr.row-del td { background: #fef4f4; }
+.paper tr.row-moved td:first-child { box-shadow: inset 3px 0 0 #3b82f6; }
 .paper table.tbl-del { outline: 2px solid #fca5a5; opacity: .8; }
+.paper table.tbl-ins { box-shadow: -10px 0 0 #fff, -13px 0 0 #22c55e; }
+.paper table.tbl-moved { box-shadow: -10px 0 0 #fff, -13px 0 0 #3b82f6; }
+.paper table.tbl-ins .block-ins, .paper table.tbl-moved .block-ins { box-shadow: none; }
 .paper.clean ins { background: none; box-shadow: none; color: inherit; }
+
+/* ------------------------------------------------------- rail (scrollbar + ticks) */
+.rail { position: relative; flex: none; width: 20px; background: var(--surface-2); border-left: 1px solid var(--border); cursor: pointer; touch-action: none; user-select: none; }
+.rail-thumb { position: absolute; left: 3px; right: 3px; top: 0; border-radius: 6px; background: rgba(15, 23, 42, .10); transition: background .15s; }
+.rail:hover .rail-thumb, .rail.dragging .rail-thumb { background: rgba(15, 23, 42, .2); }
+.rail-ticks { position: absolute; inset: 0; pointer-events: none; }
+.tick { position: absolute; display: block; }
+.tick.change { left: 1px; width: 4px; height: 3px; border-radius: 1px; opacity: .9; }
+.tick.change.ins { background: #22c55e; }
+.tick.change.del { background: #ef4444; }
+.tick.change.fmt { background: #818cf8; }
+.tick.change.moved { background: #3b82f6; }
+/* marks: the most visible thing on the rail - full width, amber, outlined, with a halo */
+.tick.mark {
+  left: 2px; right: 2px; height: 9px; margin-top: -3px; padding: 0; border: 1.5px solid #b45309; border-radius: 3px;
+  background: #fbbf24; box-shadow: 0 0 0 2px rgba(251, 191, 36, .35), 0 1px 3px rgba(120, 53, 15, .35);
+  pointer-events: auto; cursor: pointer; transition: transform .12s;
+}
+.tick.mark:hover, .tick.mark:focus-visible { background: #f59e0b; transform: scale(1.25, 1.35); z-index: 1; }
+
+/* -------------------------------------------------------------------- marks */
+::highlight(docx-mark) { background-color: #fde68a; }
+::highlight(docx-mark-active) { background-color: #fbbf24; }
+.mark-pill {
+  position: fixed; z-index: 40; display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px 0 9px;
+  border-radius: 999px; border: 1px solid #f3d38a; background: #fffbeb; color: #92400e; font: 600 12.5px var(--font);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, .14); cursor: pointer;
+}
+.mark-pill:hover { background: #fef3c7; }
+.marks-menu { position: relative; }
+.count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: #f59e0b; color: #fff; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.count[hidden] { display: none; }
+.marks-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); width: 330px; max-width: calc(100vw - 32px); max-height: 380px; overflow: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 32px rgba(15, 23, 42, .16); z-index: 30; padding: 6px;
+}
+.marks-head { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px 7px; font-weight: 600; font-size: 12.5px; color: var(--muted); }
+.mark-item { display: flex; align-items: flex-start; gap: 2px; border-radius: 8px; }
+.mark-item + .mark-item { margin-top: 2px; }
+.mark-item:hover { background: var(--surface-2); }
+.mark-go { flex: 1; min-width: 0; text-align: left; border: 0; border-left: 3px solid #f59e0b; background: none; padding: 6px 8px; font: 13px/1.35 var(--font); color: var(--text); cursor: pointer; border-radius: 4px; overflow-wrap: anywhere; }
+.mark-item.lost .mark-go { border-left-color: #d1d5db; color: var(--faint); cursor: default; }
+.lost-note { display: block; font-size: 11px; color: var(--faint); }
+.mark-del { border: 0; background: none; color: var(--faint); font-size: 16px; line-height: 1; padding: 6px 8px; cursor: pointer; border-radius: 6px; }
+.mark-del:hover { color: var(--text); background: #eef0f3; }
+.marks-empty { margin: 8px; font-size: 13px; color: var(--muted); line-height: 1.45; }
+.sel-mark { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #f3d38a; background: #fffbeb; color: #92400e; border-radius: 6px; padding: 1px 7px; font: 600 11.5px var(--font); cursor: pointer; flex: none; }
+.sel-mark:hover { background: #fef3c7; }
 
 /* text the user selected to point the assistant at: green, kept while typing */
 .paper ::selection { background: #86efac; }
@@ -176,6 +265,11 @@ del img { opacity: .45; outline: 2px solid #ef4444; }
 .msg.user { align-self: flex-end; max-width: 88%; background: var(--accent); color: #fff; border-radius: 14px 14px 4px 14px; padding: 8px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.user .quote { display: block; font-size: 12px; opacity: .9; border-left: 2px solid rgba(255,255,255,.6); padding-left: 8px; margin-bottom: 6px; white-space: normal; }
 .msg.user .quote b { font-weight: 600; }
+.msg.user.queued { background: var(--surface); color: var(--text); border: 1px dashed var(--accent); }
+.msg.user.queued .quote { border-left-color: var(--border-strong); }
+.queued-tag { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 11.5px; color: var(--muted); white-space: normal; }
+.queued-x { border: 0; background: none; color: var(--faint); font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.queued-x:hover { color: var(--text); }
 .msg.agent { align-self: stretch; background: var(--surface); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; padding: 10px 12px; box-shadow: var(--shadow); }
 .msg.agent.muted { opacity: .7; }
 .agent-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 13px; }
@@ -243,15 +337,36 @@ kbd { font: 500 10.5px var(--font); border: 1px solid var(--border-strong); bord
 
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1f2937; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.18); z-index: 50; max-width: 90vw; }
 
-@media (max-width: 1080px) {
-  .workspace { grid-template-columns: 1fr; height: auto; }
-  .viewer { min-height: 60vh; }
-  .chat { border-left: 0; border-top: 1px solid var(--border); min-height: 70vh; }
-  .paper { padding: 36px 28px; min-height: 0; }
+/* The chat always stays on screen: beside the document, or under it on phones,
+   each pane scrolling on its own. Never push it below the whole document. */
+@media (max-width: 1240px) {
+  .btn.compact .btn-label { display: none; }
+  .btn.compact { padding: 0 9px; }
   .legend-note { display: none; }
+}
+@media (max-width: 1080px) {
+  .paper:not(.paged):not(.measuring) { padding: 40px 36px; min-height: 0; }
+  .paper-wrap { padding: 16px 12px 48px; }
+}
+@media (max-width: 720px) {
+  .workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 46%); }
+  .chat { border-left: 0; border-top: 1px solid var(--border); }
+  .chat-head { display: none; }
+  .composer-hint { display: none; }
 }
 @media (max-width: 640px) {
   .paper-wrap { padding: 12px 8px 40px; }
-  .paper { padding: 24px 18px; }
-  .btn .lbl-long { display: none; }
+  .paper:not(.paged):not(.measuring) { padding: 24px 18px; }
+  .btn .btn-label { display: none; }
 }
+
+/* ------------------------------------------------ exact pages (laid out by Word) */
+.paper.exact .exact-page { position: relative; overflow: hidden; }
+.paper.exact .exact-page canvas { display: block; width: 100%; height: 100%; }
+.exact-loading { display: flex; align-items: center; gap: 10px; justify-content: center; padding: 120px 0; color: var(--muted); font: 13px var(--font); }
+/* pdf.js text layer: invisible text over the page, so it can be selected like in Word */
+.textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; z-index: 2; }
+.textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+.textLayer span.markedContent { top: 0; height: 0; }
+.textLayer ::selection { background: rgba(134, 239, 172, .55); }
+.textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: -1; cursor: default; user-select: none; }

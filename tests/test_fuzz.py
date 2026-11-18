@@ -23,10 +23,10 @@ def random_op(rng: random.Random, pkg: DocxPackage) -> dict | None:
     block = rng.choice(blocks)
     text = paragraph_view(block.element).text
     kind = rng.choice(["replace", "replace", "delete", "insert_text", "insert_par",
-                       "delete_par", "format", "restyle", "images", "rows", "insert_row",
+                       "delete_par", "format", "restyle", "images", "rows", "insert_row", "reorder_rows",
                        "delete_table", "new_table", "move", "duplicate", "style", "split",
                        "merge", "page_break", "add_col", "del_col", "to_table", "link",
-                       "unlink", "relink", "footer"])
+                       "unlink", "relink", "footer", "shape_fill"])
     blocks_and_tables = blocks + tables
     if kind in ("move", "duplicate"):
         chosen = rng.sample(blocks_and_tables, min(len(blocks_and_tables), rng.randint(1, 3)))
@@ -36,11 +36,16 @@ def random_op(rng: random.Random, pkg: DocxPackage) -> dict | None:
         if kind == "duplicate" and rng.random() < 0.5:
             op["target_id"] = None
         return op
+    if kind == "shape_fill":
+        boxes = [b.id for b in index.blocks if b.kind == "part" and b.id.startswith("tb")]
+        return ({"op": "set_shape_fill", "target": rng.choice(boxes),
+                 "color": rng.choice(["7030A0", "00B050"])} if boxes else None)
     if kind == "style":
         return {"op": "set_paragraph_format", "block_ids": [block.id],
                 "style": rng.choice([None, "Heading 1", "Heading 2", "Normal", "Title"]),
                 "align": rng.choice([None, "center", "justify"]),
-                "remove_numbering": rng.choice([False, True])}
+                "remove_numbering": rng.choice([False, True]),
+                "shading": rng.choice([None, None, "00B050", "none"])}
     if kind == "split" and len(text) > 2:
         a = rng.randrange(1, len(text))
         at = text[a:a + rng.randint(1, 10)]
@@ -100,13 +105,16 @@ def random_op(rng: random.Random, pkg: DocxPackage) -> dict | None:
         return rng.choice([{"op": "delete_images", "max_size_px": 16},
                            {"op": "delete_images", "block_id": block.id},
                            {"op": "delete_images", "images": [f"#{rng.randint(1, 9)}"]}])
-    if kind in ("rows", "insert_row", "delete_table"):
+    if kind in ("rows", "insert_row", "delete_table", "reorder_rows"):
         if not tables:
             return None
         t = rng.choice(tables)
         rows = [f"{t.id}.r{i}" for i in range(t.rows)]
         if kind == "rows":
             return {"op": "delete_table_rows", "rows": rng.sample(rows, rng.randint(1, len(rows)))}
+        if kind == "reorder_rows" and len(rows) > 1:
+            return {"op": "reorder_table_rows",
+                    "order": rng.sample(rows, rng.randint(2, len(rows)))}
         if kind == "delete_table":
             return {"op": "delete_table", "table_id": t.id}
         return {"op": "insert_table_row", "row": rng.choice(rows),
@@ -143,7 +151,16 @@ def random_op(rng: random.Random, pkg: DocxPackage) -> dict | None:
             "text": " " + rng.choice(WORDS), "occurrence": occ}
 
 
-@pytest.mark.parametrize("doc", ["session_note_bytes", "referral_bytes", "api_reference_bytes"])
+@pytest.fixture()
+def textbox_bytes():
+    from helpers import TEXT_BOX, P, R, make_docx
+    return make_docx(P(R("Booking ref: XYZEVC")) + P(TEXT_BOX("ZURICH ZURICH AIRPORT", docpr=7))
+                     + P(R("Class: ") + R("DISCOUNT", "<w:b/>")) + P(TEXT_BOX("LISBON", docpr=9))
+                     + P(R("Terminal 1")) + P(R("end")))
+
+
+@pytest.mark.parametrize("doc", ["session_note_bytes", "referral_bytes", "api_reference_bytes",
+                                 "textbox_bytes"])
 def test_random_plans_never_corrupt(doc, request):
     data = request.getfixturevalue(doc)
     rng = random.Random(1234)

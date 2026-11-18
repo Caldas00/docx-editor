@@ -157,3 +157,33 @@ def test_token_usage_is_summed_over_calls(paths):
     svc, _ = service([first, second])
     res = svc.start(src, "x", out)
     assert res.usage == {"input": 2100, "output": 100, "cached": 1000}
+
+
+def test_selection_note_says_which_paragraphs_are_selected_completely():
+    # A real failure: the selection started mid-paragraph ("To get the class ...") and ran
+    # over three whole code lines; told only "delete this", the planner deleted the first
+    # paragraph entirely. The note now tells it which paragraphs are only partly selected.
+    from helpers import P, R, pkg_of
+
+    from docx_agent.agent.graph import selection_coverage
+    icon = ('<w:r><w:drawing><wp:inline><wp:extent cx="114300" cy="114300"/>'
+            '<wp:docPr id="1" name="icon"/><a:graphic><a:graphicData><pic:pic><pic:blipFill>'
+            '<a:blip r:embed="rId99"/></pic:blipFill></pic:pic></a:graphicData></a:graphic>'
+            '</wp:inline></w:drawing></w:r>')
+    pkg = pkg_of(P(R("All header properties are accessible now.  To get the class use:"))
+                 + P(R("// Print ELF file properties"))
+                 + P("")
+                 + P(R("if ( reader.get_class() == ELFCLASS32 )" + " " * 12) + icon))
+    text = ("To get the class use:\n\n// Print ELF file properties\n\n \n\n"
+            "if ( reader.get_class() == ELFCLASS32 )")
+    whole, part = selection_coverage(pkg, ["p0", "p1", "p2", "p3", "t9.r0"], text)
+    assert whole == ["p1", "p2", "p3"] and part == ["p0"]
+
+
+def test_selection_note_reaches_the_planner(paths):
+    src, out = paths
+    svc, llm = service([call("cannot_complete", reason="test")])
+    svc.start(src, "delete this", out,
+              selection={"text": "Session Progress Note", "blocks": ["p0", "p1"]})
+    first = llm.seen[0][-1].content
+    assert "Selected completely: p0." in first and "Selected only in part: p1" in first

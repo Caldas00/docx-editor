@@ -18,6 +18,7 @@ Every failure path feeds a precise error back to the planner, bounded by
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypedDict
@@ -30,7 +31,7 @@ from langgraph.types import interrupt
 from pydantic import ValidationError
 
 from ..config import Settings, get_settings
-from ..document.model import build_index, render_outline
+from ..document.model import build_index, paragraph_view, render_outline
 from ..document.ops import DocumentEditor, EditError, EditPlan
 from ..document.package import DocxError, DocxPackage
 from ..document.verify import verify_edit
@@ -47,6 +48,31 @@ from .tools import (
 )
 
 Status = Literal["running", "done", "declined", "failed"]
+
+
+_PLACEHOLDER = re.compile(r"⟦[^⟧]*⟧")
+_SPACE = re.compile(r"\s+")
+
+
+def selection_coverage(pkg: DocxPackage, blocks: list[str], text: str) -> tuple[list, list]:
+    """Split the selected paragraph ids into (selected completely, selected only in part).
+
+    The planner cannot tell from the selected text alone whether "To get the class..." is a
+    whole paragraph or the end of a longer one, and deleting the whole paragraph would remove
+    text the user never selected. Whitespace is ignored on both sides (the preview collapses
+    runs of spaces and shows tabs as gaps), and so are pictures and other placeholders.
+    """
+    index = build_index(pkg)
+    selected = _SPACE.sub("", text)
+    whole: list[str] = []
+    part: list[str] = []
+    for bid in blocks:
+        block = index.get(bid) if isinstance(bid, str) else None
+        if block is None or block.kind != "paragraph":
+            continue
+        own = _SPACE.sub("", _PLACEHOLDER.sub("", paragraph_view(block.element).text))
+        (whole if own in selected else part).append(bid)
+    return whole, part
 
 
 class AgentState(TypedDict, total=False):
@@ -99,7 +125,7 @@ class DocxEditAgent:
     # ------------------------------------------------------------------ nodes
     def load_document(self, state: AgentState) -> dict[str, Any]:
         try:
-            DocxPackage(Path(state["input_path"]).read_bytes())  # fail fast on bad input
+            pkg = DocxPackage(Path(state["input_path"]).read_bytes())  # fail fast on bad input
         except (OSError, DocxError) as exc:
             return {"status": "failed", "message": f"Could not open the document: {exc}"}
         history = (state.get("history") or "").strip()
@@ -107,9 +133,16 @@ class DocxEditAgent:
                    else state["instruction"])
         sel = state.get("selection") or {}
         if (sel.get("text") or "").strip():
-            content += SELECTION_NOTE.format(
-                blocks=", ".join(str(b) for b in sel.get("blocks", [])[:40]),
-                text=sel["text"].strip()[:4000])
+            blocks = [str(b) for b in sel.get("blocks", [])[:40]]
+            whole, part = selection_coverage(pkg, blocks, sel["text"])
+            coverage = ""
+            if whole:
+                coverage += f" Selected completely: {', '.join(whole)}."
+            if part:
+                coverage += (f" Selected only in part: {', '.join(part)} - there, change only "
+                             "the selected words and keep the rest of the paragraph.")
+            content += SELECTION_NOTE.format(blocks=", ".join(blocks), coverage=coverage,
+                                             text=sel["text"].strip()[:4000])
         return {
             "doc_name": Path(state["input_path"]).name,
             "messages": [HumanMessage(content=content)],

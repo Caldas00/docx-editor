@@ -19,8 +19,29 @@ NS_DECL = (
     'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
     'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" '
     'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" '
-    'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"'
+    'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+    'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+    'xmlns:v="urn:schemas-microsoft-com:vml"'
 )
+
+
+def TEXT_BOX(text: str, fill: str = "00B050", docpr: int = 7) -> str:
+    """A run with a filled text box shape, as Word writes it: DrawingML in mc:Choice and a
+    VML copy (same text) in mc:Fallback."""
+    body = f'<w:p><w:r><w:t>{text}</w:t></w:r></w:p>'
+    return (
+        '<w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wp:inline>'
+        '<wp:extent cx="1905000" cy="381000"/>'
+        f'<wp:docPr id="{docpr}" name="Banner {docpr}"/><a:graphic><a:graphicData '
+        'uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp>'
+        '<wps:cNvPr id="1" name="box"/><wps:spPr><a:xfrm><a:off x="0" y="0"/>'
+        '<a:ext cx="1905000" cy="381000"/></a:xfrm><a:prstGeom prst="rect"/>'
+        f'<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill></wps:spPr>'
+        f'<wps:txbx><w:txbxContent>{body}</w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp>'
+        '</a:graphicData></a:graphic></wp:inline></w:drawing></mc:Choice><mc:Fallback>'
+        f'<w:pict><v:rect fillcolor="#{fill}"><v:textbox><w:txbxContent>{body}'
+        '</w:txbxContent></v:textbox></v:rect></w:pict></mc:Fallback></mc:AlternateContent></w:r>'
+    )
 SECT = '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr>'
 
 

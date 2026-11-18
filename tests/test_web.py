@@ -31,7 +31,11 @@ def use_script(*script) -> ScriptedLLM:
 
 
 def test_index_and_config(client):
-    assert "Docx Agent" in client.get("/").text
+    page = client.get("/")
+    assert "Docx Agent" in page.text
+    # assets are versioned by content so browsers never run a stale UI after an update
+    assert '/static/app.css?v=' in page.text and '/static/app.js?v=' in page.text
+    assert page.headers["cache-control"] == "no-cache"
     cfg = client.get("/api/config").json()
     assert {s["name"] for s in cfg["samples"]} >= {"session_note.docx", "referral_letter.docx"}
 
@@ -111,3 +115,35 @@ def test_upload_validation(client, session_note_bytes):
 def test_unknown_session_and_sample(client):
     assert client.get("/api/sessions/nope").status_code == 404
     assert client.post("/api/sessions/sample", json={"name": "../secret"}).status_code == 404
+
+
+def test_exact_pages_endpoint(client, monkeypatch):
+    # The "Document" view shows the pages as LibreOffice lays them out (see web/exact.py).
+    # Without it the endpoint says so and the UI uses its own layout.
+    from docx_agent.web import exact
+    s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
+    monkeypatch.setattr(exact, "engine", lambda: None)
+    assert client.get("/api/config").json()["exact_pages"] is None
+    assert client.get(f"/api/sessions/{s['id']}/pdf").status_code == 501
+
+    monkeypatch.setattr(exact, "engine", lambda: "libreoffice")
+    monkeypatch.setattr(exact, "to_pdf", lambda src, dest: False)
+    assert client.get(f"/api/sessions/{s['id']}/pdf").status_code == 502
+
+    calls = []
+    def fake(src, dest):
+        calls.append(src)
+        dest.write_bytes(b"%PDF-1.4 fake")
+        return True
+    monkeypatch.setattr(exact, "to_pdf", fake)
+    r = client.get(f"/api/sessions/{s['id']}/pdf?version=0")
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    client.get(f"/api/sessions/{s['id']}/pdf?version=0")
+    assert len(calls) == 1  # cached next to the version
+    assert client.get(f"/api/sessions/{s['id']}/pdf?version=9").status_code == 404
+
+
+def test_exact_engine_can_be_turned_off(monkeypatch):
+    from docx_agent.web import exact
+    monkeypatch.setenv("DOCX_AGENT_EXACT", "0")
+    assert exact.engine() is None

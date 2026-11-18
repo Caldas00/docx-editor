@@ -33,6 +33,21 @@ cp .env.example .env        # then put your OPENAI_API_KEY in .env
 uv run docx-agent serve     # http://127.0.0.1:8000
 ```
 
+**Exact pages.** The "Document" view shows the pages as a real layout engine lays them out
+when [LibreOffice](https://www.libreoffice.org) is installed. It converts each version to
+PDF headlessly, and the page is drawn with selectable text. No Microsoft Word is needed.
+Without LibreOffice, the view uses the app's own HTML layout, which is close but not exact.
+The self-contained way is Docker. The image ships LibreOffice and fonts with Word's metrics
+(Carlito for Calibri, Caladea for Cambria, Liberation for Arial, Times New Roman and Courier New):
+
+```bash
+docker build -t docx-agent .
+docker run --rm -p 8000:8000 --env-file .env docx-agent      # http://localhost:8000
+```
+
+Locally: `brew install --cask libreoffice` (macOS) or `apt-get install libreoffice-writer`
+(Linux). `DOCX_AGENT_EXACT=0` turns exact pages off.
+
 **CLI**
 
 ```bash
@@ -47,9 +62,9 @@ uv run docx-agent apply samples/input/session_note.docx \
 **Tests and evals**
 
 ```bash
-uv run pytest                    # 183 offline tests (no network, about 30 s)
+uv run pytest                    # 221 offline tests (no network, about 30 s)
 uv run pytest -m llm             # end-to-end tests against the real API
-uv run python evals/run.py       # behavioural evals against the real API (51 cases)
+uv run python evals/run.py       # behavioural evals against the real API (67 cases)
 ```
 
 **Using the web UI**
@@ -59,13 +74,40 @@ uv run python evals/run.py       # behavioural evals against the real API (51 ca
   highlighted in green while you type, and the exact text, with the block ids it covers, goes
   with your next message. So "make this bold", "apaga" or "translate this" act on precisely
   that text.
+- **You can keep typing while the agent works.** Pressing Enter queues the message (shown
+  dashed, removable); queued messages run one after another, each on the version the
+  previous one produced.
 - **The chat remembers the conversation.** Every message starts a fresh run on the latest
   version, with a compact transcript of the earlier messages and the edits made. This
   resolves "the same colours as the others", "make it bold" and answers to the agent's own
   questions. Each reply shows what changed, the integrity report, the plan, the time taken and
   the cost; questions come with quick-reply buttons.
+- **Pages like Word.** The preview reads the document's own formatting (`document/styles.py`):
+  - default formatting, then styles and the styles they are based on, then direct formatting;
+  - theme fonts and colours, including Word's tints;
+  - bold, small caps and hidden text;
+  - shading, paragraph borders, indentation and spacing;
+  - list and heading numbering ("3.1");
+  - table borders, cell margins and merged cells from the table style;
+  - content controls (a cover page, a table of contents);
+  - text boxes, lines, filled shapes and groups of shapes, each placed where Word puts it;
+  - sections with two or three columns, including explicit column breaks (common in
+    documents converted from PDF);
+  - each font's own single line height.
+
+  It lays the document out on real pages with the document's own size and margins. Page and section breaks start a new page, content flows onto the next page, long
+  tables continue on the next page, and the header and footer repeat on every page with the
+  page number filled in. It zooms out to fit narrow windows. Page ends are close to Word's but
+  not exact, because fonts and line breaking differ a little.
 - **Changes / Clean** toggles the redline. Every edit is a version you can view, download or
-  undo.
+  undo. Selecting text clears when you click anywhere outside the chat, or press Esc.
+- **Marks.** Select text and click **Mark** (in the pill above the selection or in the
+  selection chip) to bookmark it in amber. The bar between the document and the chat is the
+  document's scrollbar. It shows where you are, an amber tick for each mark (click it to jump
+  back) and small coloured ticks for what the last edit changed. **Marks** in the toolbar
+  lists them, to jump to or remove. Marks are found again by their text, so they survive
+  edits, undo and switching views. They stay in your browser and never reach the .docx or
+  the agent.
 
 **Samples** (synthetic, no real patient data): `samples/input/*.docx` are the inputs.
 `samples/output/` holds the edited documents, the plan that produced each one, and
@@ -81,7 +123,7 @@ src/docx_agent/
   document/            deterministic core (no LLM)
     package.py         opens the .docx zip, rewrites only word/document.xml
     model.py           text view: blocks with stable ids, paragraphs as "pieces"
-    ops.py             the 25 edit operations + run-level edit engine
+    ops.py             the 27 edit operations + run-level edit engine
     oracle.py          replays a plan on plain strings (independent model)
     verify.py          9 integrity checks: before vs. after vs. oracle
     render.py          HTML preview + redline for the UI
@@ -158,6 +200,9 @@ correction hint.
 | `restyle_text` | Change the formatting of **all** existing text that has some formatting now, e.g. `{"match": {"color": "70AD47"}, "set": {"color": "7030A0"}}` for "make the green text purple". If nothing matches, the error lists the values that do exist so the planner can correct itself. |
 | `delete_images` | Delete pictures by ref (`#12`, shown in the outline with their size), by paragraph, or by size (`max_size_px` for icons and emojis). Shapes and text boxes are never deleted. `delete_paragraph` needs `delete_images: true` to remove a paragraph that holds pictures. |
 | `delete_table_rows` | Delete whole rows (`t1.r23`). It is refused if it would empty the table, or if a row starts a vertical merge that continues below. |
+| `reorder_table_rows` | Put rows of one table in a new order: reverse, sort, swap. The listed rows fill the places those same rows hold now, so header rows left out stay on top. Rows move whole, with pictures and formatting. Refused for rows in vertical merges. |
+| text boxes | Text inside text boxes and shapes is its own part (`tb1`, `tb1.p0`…) and is edited with the normal operations. Word keeps a VML copy of each text box for old readers; after an edit it gets the same content, and the verifier checks both. Documents converted from PDF keep most of their text this way. |
+| `set_shape_fill` | Recolour a shape (a coloured banner, band or box, the area behind a text box), given as its text box id or its shape ref. Both the DrawingML and the VML copy change; the verifier applies the same change to the original drawing and requires exactly that result. |
 | `insert_table_row` | Insert a row next to an existing one, one text per cell. It copies a template row's properties and each cell's first paragraph, never as a header row and never vertically merged. |
 | `delete_table` | Delete a whole table. |
 | `insert_table` | Create a new table from rows of cell texts, with an optional bold, repeating header row. It copies an existing table's look (`table_like`) or uses single borders across the text width, and adds an empty paragraph where Word needs one (between two tables, or at the end of the body or a cell). |
@@ -165,9 +210,9 @@ correction hint.
 | `blocks_to_table` | Put existing consecutive paragraphs and tables into a new table, one block per cell ("put everything in a table"). The blocks keep their exact XML; tables become nested tables. |
 | `move_blocks` | Move paragraphs and tables (reorder, move a section, move to the end). The elements move unchanged, with pictures, links and fields. It is refused if it would leave two tables touching or a cell without a paragraph. |
 | `duplicate_blocks` | Copy paragraphs/tables. Copies drop bookmarks and comment anchors (which must be unique) and get fresh drawing ids. |
-| `set_paragraph_format` | Change a paragraph's style (heading levels, Normal, Title… only styles that exist in the document), its alignment, or remove list numbering. |
+| `set_paragraph_format` | Change a paragraph's style (heading levels, Normal, Title… only styles that exist in the document), its alignment, its background colour (`shading`, the coloured box behind it; `none` removes it), or remove list numbering. |
 | `split_paragraph` / `merge_paragraphs` | Split at an exact text, or join consecutive paragraphs into the first one. Inline formatting is kept on both sides. |
-| `insert_page_break` | A page break before or after a block ("new page"). Page-break paragraphs can also be deleted. |
+| `insert_page_break` | A page break before or after a block ("new page"). Page-break paragraphs can also be deleted. It is refused next to another page break (that would only add an empty page), when the plan then moves its block away (the break would stay behind), and when the block moved away from an old break that would stay behind. |
 | `insert_hyperlink` / `remove_hyperlink` / `set_hyperlink_url` | Turn text into a link, unlink it while keeping the text, or change where a link points. Links get a new relationship; existing relationships are never changed. |
 | `create_header_footer` | Add a header or footer (text, optional page number, alignment) to sections that have none. Existing headers and footers are edited with the normal text operations (`ftr1.p0`, …). |
 
@@ -234,7 +279,7 @@ Python strings and tracks the origin of every character.
 9. OOXML structure rules hold: every table cell ends with a paragraph, and the body ends with
    its `sectPr`.
 
-**2. Offline test suite (183 tests, about 30 s, no network)**
+**2. Offline test suite (221 tests, about 30 s, no network)**
 
 - **Engine unit tests** (`test_ops.py`) cover each operation and each refusal. They use
   synthetic XML with split runs, hyperlinks, fields, tracked changes, content controls,
@@ -244,7 +289,7 @@ Python strings and tracks the origin of every character.
   buggy editor would, and check that the verifier catches each case. The tampering includes
   changing an untouched paragraph, dropping bold from an edited paragraph, adding text,
   restyling a new paragraph, deleting an image, deleting a paragraph and editing `styles.xml`.
-- **A fuzz test** (`test_fuzz.py`) runs 1,200 random plans, mixing all 25 operations
+- **A fuzz test** (`test_fuzz.py`) runs 1,200 random plans, mixing all 27 operations
   (including headers/footers), on three sample documents. Each plan is either refused with an `EditError` or passes every check;
   nothing is silently corrupted. About 670 of them are applied and verified. During
   development it was also run with 30+ other seeds. It found about a dozen real interaction
@@ -269,7 +314,7 @@ Python strings and tracks the origin of every character.
 
 **3. Behavioural evals against the real model (`evals/`)**
 
-There are 51 cases across 4 documents, some of them multi-message conversations run
+There are 67 cases across 5 documents, some of them multi-message conversations run
 exactly as the web UI runs them. They cover replacements in table cells, global
 renames, list items, sentence and paragraph deletion, new sections (heading and body),
 formatting, multi-edit instructions, link text, a word split across runs, an ambiguous date
@@ -284,7 +329,11 @@ it bold", answering the agent's question in a new message). They also cover stru
 - reordering sections and moving a selection to the end on a new page,
 - duplicating, splitting and joining paragraphs, and changing heading levels,
 - adding and removing table columns, and turning paragraphs (or a whole document) into a table,
-- inserting and removing links, and editing or creating footers with page numbers.
+- inserting and removing links, and editing or creating footers with page numbers,
+- reversing table rows (with their pictures), deleting selected code lines with their icons,
+  moving a selection to a new page and then correcting it ("eu queria no final do documento",
+  "para a ultima folha" - the last page, not a new one),
+  tables from text with blank spacer lines, and questions about the preview's colours.
 Each case checks the outcome: required and forbidden text, the styles of new paragraphs, bold
 or italic, colours present or absent, picture count, table row counts and no empty rows, how
 many paragraphs changed (to catch over-editing), no new double spaces, and that verification
@@ -293,7 +342,7 @@ passed. The runner also records token usage and estimated cost. Results are in
 
 | model | passed (× 3 runs) | median latency | avg cost / edit |
 |---|---|---|---|
-| **gpt-6-luna** (default, low reasoning) | **153/153** (51 cases) | 2.4 s | **$0.0001** |
+| **gpt-6-luna** (default, low reasoning) | **201/201** (67 cases) | 2.3 s | **$0.0002** |
 | gpt-5.4-mini | 90/90 (first 30 cases) | 2.2 s | $0.0012 |
 | gpt-5-mini | 90/90 (first 30 cases) | 3.3 s | $0.0007 |
 | gpt-5.5 (previous default) | 30/30 (1 run) | 2.3 s | $0.0118 |
@@ -301,7 +350,9 @@ passed. The runner also records token usage and estimated cost. Results are in
 The prompt was tuned against this suite. The first gpt-4.1 run scored 16/18; the two failures
 led to the rules about "one insert per style" and "ask when ONE thing has several candidates".
 Later, `gpt-6-luna` once picked a different purple, which led to the colour-name table in
-`agent/prompts.py`. The static rules come before the document in the prompt, so repeated calls
+`agent/prompts.py`. The model is not deterministic: in the latest full run `ambiguous-date` once picked a date
+instead of asking and `selection-delete-starts-mid-paragraph` once kept an icon; re-run alone,
+each fails about 1 time in 8. The static rules come before the document in the prompt, so repeated calls
 reuse the provider's prompt cache (over 99 % of input tokens on a follow-up call in a
 900-block document).
 
@@ -338,7 +389,7 @@ header image, tables, lists, chart, caption and comment intact.
 
 ## Known limitations
 
-- **Footnotes, endnotes, comments and text boxes** are preserved but cannot be edited.
+- **Footnotes, endnotes and comments** are preserved but cannot be edited. Text boxes in the body can be edited; text boxes inside headers, footers or content controls (for example a cover page) are read-only.
   Headers and footers can be edited and created.
 - **Partial table and image support.** Merged cells are preserved, but they cannot be merged
   or split, and columns cannot be added or removed in tables that contain merged cells.

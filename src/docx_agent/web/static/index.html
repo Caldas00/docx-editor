@@ -6,7 +6,7 @@
   <title>Docx Agent</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Carlito:ital,wght@0,400;0,700;1,400;1,700&family=Caladea:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f766e'/%3E%3Cpath d='M10 8h8l5 5v11a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2z' fill='white'/%3E%3C/svg%3E">
 </head>
@@ -51,19 +51,27 @@
         <div class="toolbar-actions">
           <div class="segmented" role="tablist" aria-label="View">
             <button role="tab" data-view="redline" id="view-redline" aria-selected="true" title="Show what the last edit changed">Changes</button>
-            <button role="tab" data-view="clean" id="view-clean" aria-selected="false" title="Show the document without markup">Clean</button>
+            <button role="tab" data-view="clean" id="view-clean" aria-selected="false" title="Show the document without markup">Document</button>
           </div>
-          <button class="btn ghost" id="undo-btn" title="Revert the last applied edit">
+          <div class="marks-menu" id="marks-menu">
+            <button class="btn ghost compact" id="marks-btn" title="Your marks: jump back to text you marked" aria-haspopup="true" aria-expanded="false">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 3h10a2 2 0 0 1 2 2v16l-7-3-7 3V5a2 2 0 0 1 2-2z"/></svg>
+              <span class="btn-label">Marks</span>
+              <span class="count" id="marks-count" hidden>0</span>
+            </button>
+            <div class="marks-pop" id="marks-pop" hidden></div>
+          </div>
+          <button class="btn ghost compact" id="undo-btn" title="Revert the last applied edit">
             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.96 7.96 0 0 1 12.5 10.5c3.54 0 6.55 2.31 7.6 5.5l2.37-.78A10.5 10.5 0 0 0 12.5 8z"/></svg>
-            Undo
+            <span class="btn-label">Undo</span>
           </button>
-          <a class="btn" id="download-btn" href="#" download title="Download this version as .docx">
+          <a class="btn compact" id="download-btn" href="#" download title="Download this version as .docx">
             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 16 6.5 10.5l1.4-1.42L11 12.17V3h2v9.17l3.1-3.09 1.4 1.42L12 16zM5 19h14v2H5v-2z"/></svg>
-            Download
+            <span class="btn-label">Download</span>
           </a>
           <button class="btn primary" id="open-btn" title="Open another .docx (replaces this one)">
             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M11 16V7.83L7.9 10.9 6.5 9.5 12 4l5.5 5.5-1.4 1.4L13 7.83V16h-2zm-6 3h14v2H5v-2z"/></svg>
-            Open document
+            <span class="btn-label">Open document</span>
           </button>
         </div>
       </div>
@@ -77,11 +85,18 @@
         <span><del>deleted</del></span>
         <span><span class="fmt-changed">formatting</span></span>
         <span class="legend-moved">moved</span>
-        <span class="legend-note">Select text to point the assistant at it. The preview is approximate; the .docx keeps the exact formatting.</span>
+        <span class="legend-note">Select text to point the assistant at it or to mark it. The preview is approximate; the .docx keeps the exact formatting.</span>
       </div>
 
-      <div class="paper-wrap" id="paper-wrap">
-        <article class="paper" id="paper"></article>
+      <div class="doc-area">
+        <div class="paper-wrap" id="paper-wrap">
+          <article class="paper" id="paper"></article>
+        </div>
+        <!-- the document's scrollbar: where you are, your marks, and what the last edit changed -->
+        <div class="rail" id="rail" title="Click or drag to scroll">
+          <div class="rail-thumb" id="rail-thumb"></div>
+          <div class="rail-ticks" id="rail-ticks"></div>
+        </div>
       </div>
     </section>
 
@@ -95,6 +110,9 @@
         <div class="sel-chip" id="sel-chip" hidden>
           <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 5h12v2H3V5zm0 6h18v2H3v-2zm0 6h12v2H3v-2z"/></svg>
           <span class="sel-text" id="sel-text"></span>
+          <button type="button" class="sel-mark" id="sel-mark" title="Mark this text so you can jump back to it">
+            <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M7 3h10a2 2 0 0 1 2 2v16l-7-3-7 3V5a2 2 0 0 1 2-2z"/></svg>Mark
+          </button>
           <button type="button" class="sel-clear" id="sel-clear" title="Clear selection">×</button>
         </div>
         <div class="composer-box">
@@ -109,7 +127,13 @@
     </aside>
   </main>
 
+  <button type="button" class="mark-pill" id="mark-pill" hidden title="Mark this text so you can jump back to it">
+    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 3h10a2 2 0 0 1 2 2v16l-7-3-7 3V5a2 2 0 0 1 2-2z"/></svg>Mark
+  </button>
   <div class="toast" id="toast" role="status" hidden></div>
+  <!-- the hidden HTML copy of the document maps a selection on Word's pages to block ids -->
+  <div id="shadow" hidden></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

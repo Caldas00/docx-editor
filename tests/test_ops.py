@@ -583,3 +583,219 @@ def test_not_found_points_to_the_right_block():
     pkg = pkg_of(P(R("first line")) + P(R("second line")))
     with pytest.raises(EditError, match="It does appear in p0"):
         run_plan(pkg, replace("first", "1st", block_id="p1"))
+
+
+def test_delete_text_error_quotes_the_find_that_works_on_padded_code_lines():
+    # A code line padded with spaces up to a callout icon (as in real tutorials). Deleting
+    # the code alone would leave 13 leading spaces; the old hint ("include exactly one
+    # adjacent space") was impossible to follow, so the planner gave up.
+    code = "#include <x.hpp>"
+    pkg = pkg_of(P(R("#include &lt;x.hpp&gt;" + " " * 13) + IMG))
+    with pytest.raises(EditError) as err:
+        run_plan(pkg, {"op": "delete_text", "block_id": "p0", "find": code})
+    assert repr(code + " " * 13) in str(err.value)
+    out, _ = run_plan(pkg, {"op": "delete_text", "block_id": "p0", "find": code + " " * 13})
+    assert texts(out)["p0"] == "⟦IMAGE#1⟧"
+
+
+def test_delete_text_error_quotes_the_find_for_runs_of_spaces():
+    pkg = pkg_of(P(R("x = 1;   // note")))
+    with pytest.raises(EditError, match="double space") as err:
+        run_plan(pkg, {"op": "delete_text", "block_id": "p0", "find": "1;"})
+    assert repr("1;   ") in str(err.value)
+    out, _ = run_plan(pkg, {"op": "delete_text", "block_id": "p0", "find": "1;   "})
+    assert texts(out)["p0"] == "x = // note"
+
+
+def test_blocks_to_table_drops_blank_spacer_lines():
+    # A real failure: "faz uma tabela" over "name / Member functions" pairs separated by
+    # one or two blank lines gave every blank its own cell, so the pairs drifted out of
+    # their columns. Blank spacer paragraphs are now removed instead.
+    pkg = pkg_of(P(R("string_accessor")) + P(R("Member functions")) + P("") + P("")
+                 + P(R("symbol_accessor")) + P(R("Member functions")) + P("")
+                 + P(R("note_accessor")) + P(R("Member functions")) + P(R("after")))
+    ids = [f"p{i}" for i in range(9)]
+    out, _ = run_plan(pkg, {"op": "blocks_to_table", "block_ids": ids, "columns": 2})
+    from docx_agent.document.model import build_index as index_of
+    table = next(b for b in index_of(out).blocks if b.kind == "table")
+    assert table.rows == 3
+    cells = texts(out)
+    assert [cells[f"t0.r{r}.c0.p0"] for r in range(3)] == [
+        "string_accessor", "symbol_accessor", "note_accessor"]
+    assert {cells[f"t0.r{r}.c1.p0"] for r in range(3)} == {"Member functions"}
+    assert [t for k, t in cells.items() if not k.startswith("t0")] == ["after"]
+
+
+def test_blocks_to_table_refuses_only_blank_paragraphs():
+    with pytest.raises(EditError, match="only blank"):
+        run_plan(pkg_of(P("") + P("") + P(R("x"))),
+                 {"op": "blocks_to_table", "block_ids": ["p0", "p1"], "columns": 1})
+
+
+# ------------------------------------------------------------ reorder_table_rows
+def test_reorder_table_rows_reverses_body_rows_and_keeps_header(api_reference_bytes):
+    # A real request: "invert the items in this table" was declined because rows could
+    # not be reordered (retyping them would have lost the pictures and formatting).
+    from docx_agent.document import DocxPackage
+    pkg = DocxPackage(api_reference_bytes)
+    body = [f"t0.r{i}" for i in range(1, 8)]
+    out, _ = run_plan(pkg, {"op": "reorder_table_rows", "order": body[::-1]})
+    cells = texts(out)
+    assert cells["t0.r0.c1.p0"] == "Method"
+    assert [cells[f"t0.r{i}.c1.p0"] for i in range(1, 8)] == [
+        "is_closed()", "set_modality(Modality m)", "get_modality()", "set_date(Date d)",
+        "get_date()", "get_number()", "get_client_id()"]
+
+
+def test_reorder_table_rows_swaps_a_subset_in_place(api_reference_bytes):
+    from docx_agent.document import DocxPackage
+    out, _ = run_plan(DocxPackage(api_reference_bytes),
+                      {"op": "reorder_table_rows", "order": ["t0.r5", "t0.r2"]})
+    cells = texts(out)
+    assert [cells[f"t0.r{i}.c1.p0"] for i in (1, 2, 3, 4, 5, 6)] == [
+        "get_client_id()", "get_modality()", "get_date()", "set_date(Date d)", "get_number()",
+        "set_modality(Modality m)"]
+
+
+def test_reorder_table_rows_then_delete_and_edit_a_moved_row(api_reference_bytes):
+    from docx_agent.document import DocxPackage
+    out, _ = run_plan(DocxPackage(api_reference_bytes),
+                      {"op": "reorder_table_rows", "order": ["t0.r3", "t0.r2", "t0.r1"]},
+                      {"op": "replace_text", "block_id": "t0.r3.c1.p0", "find": "get_date()",
+                       "replace_with": "date()"},
+                      {"op": "delete_table_rows", "rows": ["t0.r1"]})
+    cells = texts(out)
+    assert [cells[f"t0.r{i}.c1.p0"] for i in (1, 2)] == ["date()", "get_number()"]
+
+
+@pytest.mark.parametrize("order, error", [
+    (["t0.r1", "t0.r2"], "already in that order"),
+    (["t0.r1", "t0.r1"], "only once"),
+    (["t0.r1", "t0.r9"], "only 8 rows"),
+])
+def test_reorder_table_rows_refusals(api_reference_bytes, order, error):
+    from docx_agent.document import DocxPackage
+    with pytest.raises(EditError, match=error):
+        run_plan(DocxPackage(api_reference_bytes), {"op": "reorder_table_rows", "order": order})
+
+
+def test_reorder_table_rows_refuses_vertically_merged_rows():
+    cell = '<w:tc><w:tcPr>{}</w:tcPr><w:p><w:r><w:t>{}</w:t></w:r></w:p></w:tc>'
+    table = ("<w:tbl><w:tblGrid><w:gridCol/></w:tblGrid>"
+             f"<w:tr>{cell.format('<w:vMerge w:val=\"restart\"/>', 'a')}</w:tr>"
+             f"<w:tr>{cell.format('<w:vMerge/>', '')}</w:tr>"
+             f"<w:tr>{cell.format('', 'c')}</w:tr></w:tbl>")
+    with pytest.raises(EditError, match="merged"):
+        run_plan(pkg_of(table + P(R("end"))),
+                 {"op": "reorder_table_rows", "order": ["t0.r2", "t0.r0"]})
+
+
+def test_unknown_block_error_explains_that_new_paragraphs_have_no_id():
+    # Seen with the real model: it inserted a heading, then tried to restyle it as "p25".
+    pkg = pkg_of(P(R("one")) + P(R("two")))
+    with pytest.raises(EditError, match="added by this plan have no ids"):
+        run_plan(pkg, {"op": "insert_paragraph", "target_id": "p1", "position": "after",
+                       "text": "three", "format_like": "p1"},
+                 {"op": "set_paragraph_format", "block_ids": ["p2"], "align": "center"})
+
+
+def test_page_break_then_moving_its_block_away_is_refused():
+    # A real failure: "move this to a new page" was planned as insert_page_break before p0,
+    # then move_blocks p0 to the end - the break stayed behind, the text got no break.
+    pkg = pkg_of(P(R("note")) + P(R("body")) + P(R("last")))
+    with pytest.raises(EditError, match="Move the blocks FIRST"):
+        run_plan(pkg, {"op": "insert_page_break", "target_id": "p0", "position": "before"},
+                 {"op": "move_blocks", "block_ids": ["p0"], "target_id": "p2",
+                  "position": "after"})
+    out, _ = run_plan(pkg, {"op": "move_blocks", "block_ids": ["p0"], "target_id": "p2",
+                            "position": "after"},
+                      {"op": "insert_page_break", "target_id": "p0", "position": "before"})
+    assert list(texts(out).values()) == ["body", "last", "⟦PAGE BREAK⟧", "note"]
+
+
+def test_new_break_for_moved_blocks_that_left_their_old_break_behind_is_refused():
+    # A real failure: after "put this on a new page", "I wanted it at the end" moved the text
+    # and added a fresh break, leaving the earlier break orphaned at the old place.
+    pkg = pkg_of(P(R("intro")) + P('<w:r><w:br w:type="page"/></w:r>') + P(R("note"))
+                 + P(R("last")))
+    assert texts(pkg)["p1"] == "⟦PAGE BREAK⟧"
+    with pytest.raises(EditError, match="stood right before p2"):
+        run_plan(pkg, {"op": "move_blocks", "block_ids": ["p2"], "target_id": "p3",
+                       "position": "after"},
+                 {"op": "insert_page_break", "target_id": "p2", "position": "before"})
+    out, _ = run_plan(pkg, {"op": "move_blocks", "block_ids": ["p1", "p2"], "target_id": "p3",
+                            "position": "after"})
+    assert list(texts(out).values()) == ["intro", "last", "⟦PAGE BREAK⟧", "note"]
+
+
+def test_page_break_next_to_another_page_break_is_refused():
+    # Seen with the real model: it moved a page break with its section and then added
+    # another one right next to it, which only produces an empty page.
+    pkg = pkg_of(P(R("a")) + P('<w:r><w:br w:type="page"/></w:r>') + P(R("b")))
+    for target, position in (("p2", "before"), ("p0", "after"), ("p1", "before")):
+        with pytest.raises(EditError, match="already a page break"):
+            run_plan(pkg, {"op": "insert_page_break", "target_id": target, "position": position})
+
+
+def test_moving_blocks_to_where_they_already_are_is_refused():
+    # Seen with the real model: "put this on a new page" became move p1-p2 after p0 (a no-op)
+    # plus the page break; the no-op showed up as a confusing "moved" change.
+    pkg = pkg_of(P(R("a")) + P(R("b")) + P(R("c")) + P(R("d")))
+    for target, position in (("p0", "after"), ("p3", "before")):
+        with pytest.raises(EditError, match="already right there"):
+            run_plan(pkg, {"op": "move_blocks", "block_ids": ["p1", "p2"], "target_id": target,
+                           "position": position})
+
+
+def test_paragraph_shading_is_set_and_removed():
+    # A real request: "change this block to green" on a shaded note box meant the box's
+    # background (paragraph shading), not the text colour - there was no way to do that.
+    shaded = '<w:pPr><w:shd w:val="clear" w:color="auto" w:fill="FFF4D1"/></w:pPr>'
+    pkg = pkg_of(P(R("Note:"), shaded) + P(R("body"), shaded) + P(R("after")))
+    out, _ = run_plan(pkg, {"op": "set_paragraph_format", "block_ids": ["p0", "p1"],
+                            "shading": "00b050"})
+    assert 'w:fill="00B050"' in block_xml(out, "p0") and 'w:fill="00B050"' in block_xml(out, "p1")
+    assert "FFF4D1" not in block_xml(out, "p0")
+    out, _ = run_plan(pkg, {"op": "set_paragraph_format", "block_ids": ["p0"], "shading": "none"})
+    assert "w:shd" not in block_xml(out, "p0") and "FFF4D1" in block_xml(out, "p1")
+
+
+# ------------------------------------------------------------- text boxes / shapes
+def _ticket_like():
+    from helpers import TEXT_BOX
+    return pkg_of(P(R("intro")) + P(TEXT_BOX("ZURICH ZURICH AIRPORT")) + P(R("end")))
+
+
+def test_text_box_text_is_editable_and_its_vml_copy_follows():
+    # A real document (an e-ticket converted from PDF) has almost all its text in text
+    # boxes; "make this purple" on such text was refused because text boxes were opaque.
+    pkg = _ticket_like()
+    index = build_index(pkg)
+    assert index.get("tb1") is not None and texts(pkg)["tb1.p0"] == "ZURICH ZURICH AIRPORT"
+    out, _ = run_plan(pkg, {"op": "replace_text", "block_id": "tb1.p0", "find": "ZURICH ZURICH",
+                            "replace_with": "ZURICH"})
+    xml = block_xml(out, "p1")
+    assert xml.count("ZURICH AIRPORT") == 2 and "ZURICH ZURICH" not in xml  # both copies
+    out, _ = run_plan(pkg, {"op": "replace_text", "block_id": None, "find": "AIRPORT",
+                            "replace_with": "Airport", "occurrence": "all"})
+    assert texts(out)["tb1.p0"] == "ZURICH ZURICH Airport"
+
+
+def test_text_box_must_keep_a_paragraph_and_cannot_swap_with_the_body():
+    pkg = _ticket_like()
+    with pytest.raises(EditError, match="only paragraph"):
+        run_plan(pkg, {"op": "delete_paragraph", "block_id": "tb1.p0"})
+    with pytest.raises(EditError, match="same part"):
+        run_plan(pkg, {"op": "move_blocks", "block_ids": ["tb1.p0"], "target_id": "p2",
+                       "position": "after"})
+
+
+def test_shape_fill_is_recoloured_in_both_copies():
+    pkg = _ticket_like()
+    out, report = run_plan(pkg, {"op": "set_shape_fill", "target": "tb1", "color": "7030a0"})
+    xml = block_xml(out, "p1")
+    assert 'val="7030A0"' in xml and 'fillcolor="#7030A0"' in xml and "00B050" not in xml
+    out, _ = run_plan(pkg, {"op": "set_shape_fill", "target": "#7", "color": "7030A0"})
+    assert 'val="7030A0"' in block_xml(out, "p1")
+    with pytest.raises(EditError, match="no shape"):
+        run_plan(pkg, {"op": "set_shape_fill", "target": "#99", "color": "7030A0"})

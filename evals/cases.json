@@ -646,6 +646,9 @@
           "Risk assessment:",
           1
         ]
+      ],
+      "page_break_before": [
+        "Risk assessment:"
       ]
     }
   },
@@ -829,6 +832,597 @@
         "Client Intake Form",
         "Preferred name",
         "I consent"
+      ]
+    }
+  },
+  {
+    "id": "selection-delete-padded-code-lines",
+    "doc": "api_reference.docx",
+    "selection": {
+      "text": "#include <notes/sdk.hpp>\n\nusing namespace notes;",
+      "blocks": [
+        "p3",
+        "p4"
+      ]
+    },
+    "instruction": "delete this",
+    "expect": {
+      "status": "done",
+      "doc_not_contains": [
+        "#include <notes/sdk.hpp>",
+        "using namespace notes;"
+      ],
+      "doc_contains": [
+        "session_reader reader;",
+        "Include the SDK header"
+      ],
+      "images": 6
+    }
+  },
+  {
+    "id": "selection-delete-code-lines-pt",
+    "doc": "api_reference.docx",
+    "selection": {
+      "text": "session_reader reader;\n\nreader.load(\"session.json\");",
+      "blocks": [
+        "p5",
+        "p6"
+      ]
+    },
+    "instruction": "apaga isto",
+    "expect": {
+      "status": "done",
+      "doc_not_contains": [
+        "session_reader reader;",
+        "reader.load(\"session.json\");"
+      ],
+      "doc_contains": [
+        "using namespace notes;",
+        "Load a session file"
+      ],
+      "images": 6
+    }
+  },
+  {
+    "id": "selection-delete-starts-mid-paragraph",
+    "doc": "api_reference.docx",
+    "selection": {
+      "text": "generated from synthetic data.\n\n1. Getting started\n\n#include <notes/sdk.hpp>",
+      "blocks": [
+        "p1",
+        "p2",
+        "p3"
+      ]
+    },
+    "instruction": "delete this",
+    "expect": {
+      "status": "done",
+      "doc_contains": [
+        "Note: this reference is",
+        "using namespace notes;"
+      ],
+      "doc_not_contains": [
+        "synthetic data",
+        "1. Getting started",
+        "#include <notes/sdk.hpp>"
+      ],
+      "images": 7
+    }
+  },
+  {
+    "id": "selection-table-skips-blank-lines",
+    "doc": "referral_letter.docx",
+    "selection": {
+      "text": "Lumen Counselling Practice\n\n12 Example Street\n\n1000-000 Lisbon\n\n \n\n18 November 2026",
+      "blocks": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4"
+      ]
+    },
+    "instruction": "faz uma tabela com isto, uma linha por linha",
+    "expect": {
+      "status": "done",
+      "table_rows": [
+        4,
+        4
+      ],
+      "no_empty_rows": true,
+      "doc_contains": [
+        "Lumen Counselling Practice",
+        "18 November 2026"
+      ]
+    }
+  },
+  {
+    "id": "question-about-preview-colours",
+    "doc": "api_reference.docx",
+    "instruction": "put the four code lines in a table",
+    "expect": {
+      "status": "done",
+      "top_tables": 2
+    },
+    "followups": [
+      {
+        "instruction": "porque é que a tabela é verde?",
+        "expect": {
+          "status": "declined",
+          "message_contains_any": [
+            "Clean",
+            "Changes",
+            "Alterações",
+            "pré-visualização",
+            "preview"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "reverse-table-rows",
+    "doc": "api_reference.docx",
+    "instruction": "Invert the order of the rows in the session class table",
+    "expect": {
+      "status": "done",
+      "table_rows": [
+        8
+      ],
+      "order": [
+        [
+          "Return type",
+          "is_closed()"
+        ],
+        [
+          "is_closed()",
+          "set_modality(Modality m)"
+        ],
+        [
+          "get_number()",
+          "get_client_id()"
+        ]
+      ],
+      "count": [
+        [
+          "get_client_id()",
+          1
+        ],
+        [
+          "get_number()",
+          1
+        ],
+        [
+          "get_date()",
+          2
+        ],
+        [
+          "set_date(Date d)",
+          1
+        ],
+        [
+          "get_modality()",
+          1
+        ],
+        [
+          "set_modality(Modality m)",
+          1
+        ],
+        [
+          "is_closed()",
+          1
+        ]
+      ]
+    }
+  },
+  {
+    "id": "selection-invert-table-items",
+    "doc": "api_reference.docx",
+    "selection": {
+      "text": "Return type\tMethod\tDescription\nstd::string\tget_client_id()\tReturns the synthetic client identifier.\nint\tget_number()\tReturns the session number.\nDate\tget_date()\tReturns the session date.\nvoid\tset_date(Date d)\tSets the session date.\nModality\tget_modality()\tReturns the therapy modality.\nvoid\tset_modality(Modality m)\tSets the therapy modality.\nbool\tis_closed()\tTells whether the note is signed and closed.",
+      "blocks": [
+        "t0.r0.c0.p0",
+        "t0.r0.c1.p0",
+        "t0.r0.c2.p0",
+        "t0.r1.c0.p0",
+        "t0.r1.c1.p0",
+        "t0.r1.c2.p0",
+        "t0.r2.c0.p0",
+        "t0.r2.c1.p0",
+        "t0.r2.c2.p0",
+        "t0.r3.c0.p0",
+        "t0.r3.c1.p0",
+        "t0.r3.c2.p0",
+        "t0.r4.c0.p0",
+        "t0.r4.c1.p0",
+        "t0.r4.c2.p0",
+        "t0.r5.c0.p0",
+        "t0.r5.c1.p0",
+        "t0.r5.c2.p0",
+        "t0.r6.c0.p0",
+        "t0.r6.c1.p0",
+        "t0.r6.c2.p0",
+        "t0.r7.c0.p0",
+        "t0.r7.c1.p0",
+        "t0.r7.c2.p0",
+        "t0.r0",
+        "t0.r1",
+        "t0.r2",
+        "t0.r3",
+        "t0.r4",
+        "t0.r5",
+        "t0.r6",
+        "t0.r7"
+      ]
+    },
+    "instruction": "Invert the items in this table",
+    "expect": {
+      "status": "done",
+      "table_rows": [
+        8
+      ],
+      "order": [
+        [
+          "Return type",
+          "is_closed()"
+        ],
+        [
+          "is_closed()",
+          "get_client_id()"
+        ]
+      ],
+      "count": [
+        [
+          "get_client_id()",
+          1
+        ],
+        [
+          "get_number()",
+          1
+        ],
+        [
+          "get_date()",
+          2
+        ],
+        [
+          "set_date(Date d)",
+          1
+        ],
+        [
+          "get_modality()",
+          1
+        ],
+        [
+          "set_modality(Modality m)",
+          1
+        ],
+        [
+          "is_closed()",
+          1
+        ]
+      ]
+    }
+  },
+  {
+    "id": "move-section-to-new-page-at-end",
+    "doc": "session_note.docx",
+    "selection": {
+      "text": "2. Presenting concerns\n\nThe client reported improved sleep over the past two weeks, with fewer night-time awakenings. Work-related anxiety remains the main concern, particularly before team meetings.\n\nRisk assessment: No current risk indicators. Review again next session.",
+      "blocks": [
+        "p4",
+        "p5",
+        "p6"
+      ]
+    },
+    "instruction": "muda isto para uma nova folha no final do documento",
+    "expect": {
+      "status": "done",
+      "page_breaks": 2,
+      "page_break_before": [
+        "2. Presenting concerns"
+      ],
+      "order": [
+        [
+          "Bring the record to the next session.",
+          "2. Presenting concerns"
+        ],
+        [
+          "2. Presenting concerns",
+          "Risk assessment:"
+        ]
+      ],
+      "count": [
+        [
+          "Risk assessment:",
+          1
+        ],
+        [
+          "2. Presenting concerns",
+          1
+        ]
+      ]
+    }
+  },
+  {
+    "id": "new-page-then-correct-to-end",
+    "doc": "session_note.docx",
+    "selection": {
+      "text": "2. Presenting concerns\n\nThe client reported improved sleep over the past two weeks, with fewer night-time awakenings. Work-related anxiety remains the main concern, particularly before team meetings.\n\nRisk assessment: No current risk indicators. Review again next session.",
+      "blocks": [
+        "p4",
+        "p5",
+        "p6"
+      ]
+    },
+    "instruction": "muda isto para uma nova folha",
+    "expect": {
+      "status": "done",
+      "page_break_before": [
+        "2. Presenting concerns"
+      ],
+      "page_breaks": 2
+    },
+    "followups": [
+      {
+        "instruction": "eu queria no final do documento",
+        "expect": {
+          "status": "done",
+          "page_breaks": [
+            1,
+            2
+          ],
+          "order": [
+            [
+              "Bring the record to the next session.",
+              "2. Presenting concerns"
+            ],
+            [
+              "2. Presenting concerns",
+              "Risk assessment:"
+            ]
+          ],
+          "count": [
+            [
+              "Risk assessment:",
+              1
+            ],
+            [
+              "2. Presenting concerns",
+              1
+            ]
+          ],
+          "no_page_break_before": [
+            "3. Interventions used"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "new-page-then-last-page",
+    "doc": "session_note.docx",
+    "selection": {
+      "text": "2. Presenting concerns\n\nThe client reported improved sleep over the past two weeks, with fewer night-time awakenings. Work-related anxiety remains the main concern, particularly before team meetings.\n\nRisk assessment: No current risk indicators. Review again next session.",
+      "blocks": [
+        "p4",
+        "p5",
+        "p6"
+      ]
+    },
+    "instruction": "muda isto para uma nova folha",
+    "expect": {
+      "status": "done",
+      "page_break_before": [
+        "2. Presenting concerns"
+      ],
+      "page_breaks": 2
+    },
+    "followups": [
+      {
+        "instruction": "para a ultima folha",
+        "expect": {
+          "status": "done",
+          "page_breaks": 1,
+          "order": [
+            [
+              "Bring the record to the next session.",
+              "2. Presenting concerns"
+            ],
+            [
+              "2. Presenting concerns",
+              "Risk assessment:"
+            ]
+          ],
+          "count": [
+            [
+              "Risk assessment:",
+              1
+            ],
+            [
+              "2. Presenting concerns",
+              1
+            ]
+          ],
+          "no_page_break_before": [
+            "2. Presenting concerns",
+            "3. Interventions used"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "selection-to-last-page",
+    "doc": "session_note.docx",
+    "selection": {
+      "text": "2. Presenting concerns\n\nThe client reported improved sleep over the past two weeks, with fewer night-time awakenings. Work-related anxiety remains the main concern, particularly before team meetings.\n\nRisk assessment: No current risk indicators. Review again next session.",
+      "blocks": [
+        "p4",
+        "p5",
+        "p6"
+      ]
+    },
+    "instruction": "mete isto na ultima folha",
+    "expect": {
+      "status": "done",
+      "page_breaks": 1,
+      "order": [
+        [
+          "Bring the record to the next session.",
+          "2. Presenting concerns"
+        ],
+        [
+          "2. Presenting concerns",
+          "Risk assessment:"
+        ]
+      ],
+      "count": [
+        [
+          "Risk assessment:",
+          1
+        ],
+        [
+          "2. Presenting concerns",
+          1
+        ]
+      ],
+      "no_page_break_before": [
+        "2. Presenting concerns"
+      ]
+    }
+  },
+  {
+    "id": "paragraph-background-not-text-colour",
+    "doc": "api_reference.docx",
+    "selection": {
+      "text": "Warning: load() throws if the file is not valid JSON.",
+      "blocks": [
+        "p11"
+      ]
+    },
+    "instruction": "pinta o fundo deste bloco de amarelo",
+    "expect": {
+      "status": "done",
+      "shading_of": [
+        [
+          "load() throws",
+          "FFFF00"
+        ]
+      ],
+      "color_of": [
+        [
+          "load() throws",
+          "FF0000"
+        ]
+      ],
+      "max_changed": 0
+    }
+  },
+  {
+    "id": "selection-block-to-green-is-background",
+    "doc": "api_reference.docx",
+    "instruction": "give the warning paragraph a light yellow background (FFF4D1)",
+    "expect": {
+      "status": "done",
+      "shading_of": [
+        [
+          "load() throws",
+          "FFF4D1"
+        ]
+      ]
+    },
+    "followups": [
+      {
+        "instruction": "change this block to green",
+        "selection": {
+          "text": "Warning: load() throws if the file is not valid JSON.",
+          "blocks": [
+            "p11"
+          ]
+        },
+        "expect": {
+          "status": "done",
+          "shading_of": [
+            [
+              "load() throws",
+              "00B050"
+            ]
+          ],
+          "color_of": [
+            [
+              "load() throws",
+              "FF0000"
+            ]
+          ],
+          "max_changed": 0
+        }
+      }
+    ]
+  },
+  {
+    "id": "text-box-block-to-purple-is-shape-fill",
+    "doc": "travel_receipt.docx",
+    "selection": {
+      "text": "ELECTRONIC TICKET RECEIPT",
+      "blocks": [
+        "tb1.p0"
+      ]
+    },
+    "instruction": "muda este bloco para roxo",
+    "expect": {
+      "status": "done",
+      "shape_fill_of": [
+        [
+          "ELECTRONIC TICKET RECEIPT",
+          "7030A0"
+        ]
+      ],
+      "color_of": [
+        [
+          "ELECTRONIC TICKET RECEIPT",
+          "FFFFFF"
+        ]
+      ],
+      "max_changed": 0
+    }
+  },
+  {
+    "id": "text-box-text-to-purple",
+    "doc": "travel_receipt.docx",
+    "selection": {
+      "text": "NORTHVILLE CENTRAL AIRPORT",
+      "blocks": [
+        "tb2.p0"
+      ]
+    },
+    "instruction": "muda isto para roxo",
+    "expect": {
+      "status": "done",
+      "color_of": [
+        [
+          "NORTHVILLE CENTRAL AIRPORT",
+          "7030A0"
+        ]
+      ],
+      "shape_fill_of": [
+        [
+          "NORTHVILLE CENTRAL AIRPORT",
+          "E7E6E6"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "text-box-replace-text",
+    "doc": "travel_receipt.docx",
+    "instruction": "Change Terminal 2 to Terminal 3",
+    "expect": {
+      "status": "done",
+      "doc_contains": [
+        "Terminal 3"
+      ],
+      "doc_not_contains": [
+        "Terminal 2"
       ]
     }
   }

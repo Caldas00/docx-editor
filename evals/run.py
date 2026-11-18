@@ -74,6 +74,9 @@ def check(expect: dict, outcome, src: Path, out: Path) -> list[str]:
     if outcome.status not in allowed:
         errors.append(f"status {outcome.status!r} not in {allowed} ({outcome.message[:120]})")
         return errors
+    words = expect.get("message_contains_any")
+    if words and not any(w.lower() in (outcome.message or "").lower() for w in words):
+        errors.append(f"message mentions none of {words}: {outcome.message[:160]!r}")
     if outcome.status != "done":
         return errors
     before = paragraphs(src)
@@ -134,10 +137,39 @@ def check(expect: dict, outcome, src: Path, out: Path) -> list[str]:
     for needle, n in expect.get("count", []):
         if full.count(needle) != n:
             errors.append(f"{needle!r} appears {full.count(needle)} times (wanted {n})")
+    for needle in expect.get("page_break_before", []):
+        k = next((i for i, (t, _, _) in enumerate(after) if needle in t), None)
+        if k is None or not (after[k][0].startswith("⟦PAGE BREAK⟧")
+                             or (k > 0 and after[k - 1][0].strip() == "⟦PAGE BREAK⟧")):
+            errors.append(f"no page break right before {needle!r}")
+    for needle, fill in expect.get("shading_of", []):
+        from docx_agent.document.model import paragraph_shading
+        pk = DocxPackage(out.read_bytes())
+        hit = next((p for p in pk.body.iter(W.p) if needle in paragraph_view(p).text), None)
+        got = paragraph_shading(pk, hit) if hit is not None else None
+        if (got or "").upper() != fill.upper():
+            errors.append(f"{needle!r} has background {got} (wanted {fill})")
+    for needle, fill in expect.get("shape_fill_of", []):
+        from docx_agent.document.model import text_boxes
+        pk = DocxPackage(out.read_bytes())
+        box = next((b for _, b in text_boxes(pk.body)
+                    if needle in "".join(paragraph_view(p).text for p in b.iter(W.p))), None)
+        drawing = next((a for a in box.iterancestors() if a.tag == W.drawing), None) \
+            if box is not None else None
+        vals = {c.get("val", "").upper() for c in drawing.iter(
+            "{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr")} if drawing is not None else set()
+        if fill.upper() not in vals:
+            errors.append(f"shape with {needle!r} has fills {sorted(vals)} (wanted {fill})")
+    for needle in expect.get("no_page_break_before", []):
+        k = next((i for i, (t, _, _) in enumerate(after) if needle in t), None)
+        if k is not None and (after[k][0].startswith("⟦PAGE BREAK⟧")
+                              or (k > 0 and after[k - 1][0].strip() == "⟦PAGE BREAK⟧")):
+            errors.append(f"unexpected page break right before {needle!r}")
     if "page_breaks" in expect:
         n = sum(1 for br in pkg.body.iter(W.br) if br.get(W.type) == "page")
-        if n != expect["page_breaks"]:
-            errors.append(f"{n} page breaks (wanted {expect['page_breaks']})")
+        wanted = expect["page_breaks"]
+        if n not in (wanted if isinstance(wanted, list) else [wanted]):
+            errors.append(f"{n} page breaks (wanted {wanted})")
     top_tables = [b for b in build_index(pkg).blocks if b.kind == "table" and b.depth == 0]
     if "top_tables" in expect and len(top_tables) != expect["top_tables"]:
         errors.append(f"{len(top_tables)} top-level tables (wanted {expect['top_tables']})")

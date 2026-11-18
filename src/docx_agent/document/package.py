@@ -299,6 +299,15 @@ class DocxPackage:
         return out
 
     @cached_property
+    def style_elements(self) -> dict[str, etree._Element]:
+        """styleId -> w:style element (read-only use: resolving inherited properties)."""
+        data = self.parts.get(posixpath.join(self.main_part_dir, "styles.xml"))
+        if data is None:
+            return {}
+        return {st.get(W.styleId): st for st in parse_xml(data).findall(W.style)
+                if st.get(W.styleId)}
+
+    @cached_property
     def default_paragraph_style(self) -> str | None:
         styles_part = posixpath.join(self.main_part_dir, "styles.xml")
         data = self.parts.get(styles_part)

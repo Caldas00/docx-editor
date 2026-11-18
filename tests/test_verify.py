@@ -268,3 +268,54 @@ def test_detects_created_footer_with_other_text(referral_bytes):
     # the created part is serialised from its tree, so the tamper reaches the output
     assert "Styles, media, metadata and other parts untouched" in failing(
         verify_edit(before, data, p))
+
+
+def test_detects_wrong_paragraph_shading(session_note):
+    from lxml import etree
+    p = plan({"op": "set_paragraph_format", "block_ids": ["p5"], "shading": "00B050"})
+    work = session_note.copy()
+    apply_plan(work, p)
+    assert verify_edit(session_note, work.to_bytes(), p).passed
+    shd = build_index(work).get("p5").element.find(f"{W.pPr}/{{{W.pPr[1:].split('}')[0]}}}shd")
+    shd.set(f"{{{W.pPr[1:].split('}')[0]}}}fill", "FF0000")  # a different colour than planned
+    assert failing(verify_edit(session_note, work.to_bytes(), p))
+    etree.strip_elements(build_index(work).get("p5").element.find(W.pPr), shd.tag)
+    assert failing(verify_edit(session_note, work.to_bytes(), p))  # and none at all
+
+
+def _box_doc():
+    from helpers import TEXT_BOX, P, R, pkg_of
+    return pkg_of(P(R("intro")) + P(TEXT_BOX("ZURICH ZURICH AIRPORT")) + P(R("end")))
+
+
+def test_detects_wrong_shape_fill():
+    pkg = _box_doc()
+    p = plan({"op": "set_shape_fill", "target": "tb1", "color": "7030A0"})
+    work = pkg.copy()
+    apply_plan(work, p)
+    assert verify_edit(pkg, work.to_bytes(), p).passed
+    clr = next(work.body.iter("{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr"))
+    clr.set("val", "FF0000")  # another colour than planned
+    assert "Formatting preserved in edited paragraphs" in failing(
+        verify_edit(pkg, work.to_bytes(), p))
+
+
+def test_detects_text_box_vml_copy_out_of_sync():
+    pkg = _box_doc()
+    p = plan({"op": "replace_text", "block_id": "tb1.p0", "find": "ZURICH ZURICH",
+              "replace_with": "ZURICH"})
+    work = pkg.copy()
+    apply_plan(work, p)
+    assert verify_edit(pkg, work.to_bytes(), p).passed
+    vml_t = list(work.body.iter(W.t))[-2]  # the text in the VML copy
+    vml_t.text = "ZURICH ZURICH AIRPORT"  # stale old text for old readers
+    assert "Untouched blocks are XML-identical" in failing(verify_edit(pkg, work.to_bytes(), p))
+
+
+def test_detects_unplanned_change_in_a_text_box():
+    pkg = _box_doc()
+    p = plan({"op": "replace_text", "block_id": "p0", "find": "intro", "replace_with": "Intro"})
+    work = pkg.copy()
+    apply_plan(work, p)
+    next(t for t in work.body.iter(W.t) if t.text == "ZURICH ZURICH AIRPORT").text = "X"
+    assert failing(verify_edit(pkg, work.to_bytes(), p))
