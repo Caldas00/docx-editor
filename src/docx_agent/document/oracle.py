@@ -74,6 +74,7 @@ from .ops import (
     page_break_text,
     props_match,
     resolve_paragraph_style,
+    shape_above,
 )
 from .package import DocxPackage
 
@@ -728,6 +729,10 @@ class Oracle:
         new = Expected("p", None, None, True, chars, True, None, spec={"page_break": True})
         lst, i, j = self._span(target)
         at = j if op.position == "after" else i
+        if op.position == "before" and target.kind == "p" and shape_above(target.element):
+            while at > 0 and lst[at - 1].kind == "p" and not lst[at - 1].chars \
+                    and lst[at - 1].element is not None and is_blank_paragraph(lst[at - 1].element):
+                at -= 1  # above the empty lines that hold the room of a shape drawn above
         lst[at:at] = [new]
 
     # --------------------------------------------------------------- hyperlinks

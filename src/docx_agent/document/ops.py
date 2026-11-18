@@ -1039,6 +1039,28 @@ def removal_problem(el: etree._Element) -> str | None:
     return None
 
 
+def resolve_style_name(pkg: DocxPackage, p: etree._Element) -> str | None:
+    ps = p.find(f"{W.pPr}/{W.pStyle}")
+    sid = ps.get(W.val) if ps is not None else pkg.default_paragraph_style
+    return pkg.paragraph_styles.get(sid or "", sid)
+
+
+def shape_above(p: etree._Element) -> bool:
+    """Does the paragraph anchor a shape drawn ABOVE it (a negative offset from the
+    paragraph)? Such a shape covers the empty lines before the paragraph, which keep room
+    for it. Shared with the oracle (page breaks go above those lines)."""
+    if p.tag != W.p:
+        return False
+    for pos in p.iter(qn("wp:positionV")):
+        if any(a.tag == qn("mc:Fallback") for a in pos.iterancestors()):
+            continue
+        off = pos.find(qn("wp:posOffset"))
+        if pos.get("relativeFrom") in ("paragraph", "line") and off is not None \
+                and (off.text or "").strip().startswith("-"):
+            return True
+    return False
+
+
 def is_blank_paragraph(el: etree._Element) -> bool:
     """An empty spacer paragraph: no text, pictures or other content, nothing anchored to it.
     Shared with the oracle (blocks_to_table removes these instead of giving them a cell)."""
@@ -1783,6 +1805,13 @@ class DocumentEditor:
                 _remove(tr)
                 self._record(idx, "delete_table_row", row_id, before, None)
 
+    def _heads_its_section(self, el: etree._Element) -> bool:
+        """A heading, title or banner (a paragraph holding a shape with text)."""
+        if el.tag != W.p:
+            return False
+        style = (resolve_style_name(self.pkg, el) or "").lower()
+        return style.startswith(("heading", "title")) or el.find(".//" + TXBX) is not None
+
     def _set_shape_fill(self, idx: int, op: SetShapeFill) -> None:
         node, host, label = find_drawing(self.pkg, self.index, op.target)
         if not self._attached(host):
@@ -2008,6 +2037,26 @@ class DocumentEditor:
                     f"break {where} {bid} (it is placed wherever {bid} is by then).")
             if self._has_section_break(el):
                 raise EditError(f"{self._label(el)} carries a section break and cannot move.")
+        contiguous = all(a.getnext() is b for a, b in zip(els, els[1:]))
+        if op.position == "after" and contiguous and self._heads_its_section(els[0]):
+            follow, node = [], els[-1].getnext()
+            while node is not None and node is not target:
+                follow.append(node)
+                node = node.getnext()
+            rest = target.getnext() if node is target else None
+            while rest is not None and (rest.tag == W.sectPr or is_blank_paragraph(rest)):
+                rest = rest.getnext()
+            jumped = follow + [target]  # the text it would end up below, target included
+            own_text = not any(self._heads_its_section(f) for f in jumped)  # no other section
+            if node is target and rest is None and own_text \
+                    and any(not is_blank_paragraph(f) for f in jumped):
+                # A real failure: "put this on a new page at the end" on a banner that already
+                # starts the last section moved it below its own text.
+                raise EditError(
+                    f"{self._label(els[0])} starts a section that already runs to the end of the "
+                    f"document; moving it after {op.target_id} would put it below its own text. "
+                    f"To start it on a new page, use insert_page_break before "
+                    f"{self._label(els[0])} alone (no move).")
         if all(a.getnext() is b for a, b in zip(els, els[1:])) and (
                 (op.position == "after" and els[0].getprevious() is target)
                 or (op.position == "before" and els[-1].getnext() is target)):
@@ -2204,16 +2253,23 @@ class DocumentEditor:
                 f"{self._label(left)} is a page break that stood right before {op.target_id} and "
                 "would stay behind at the old place. Move it together with the blocks (list it "
                 "first in move_blocks) instead of inserting a new page break.")
-        neighbour = target.getprevious() if op.position == "before" else target.getnext()
+        at = target
+        if op.position == "before" and shape_above(target):
+            # A real failure: the break went right before a paragraph whose banner is drawn
+            # above it, so on the new page the banner was cut off at the top. The break goes
+            # above the empty lines that hold the banner's room instead.
+            while at.getprevious() is not None and is_blank_paragraph(at.getprevious()):
+                at = at.getprevious()
+        neighbour = at.getprevious() if op.position == "before" else at.getnext()
         if any(e is not None and e.tag == W.p and paragraph_view(e).text.strip() == PAGE_BREAK_TEXT
-               for e in (target, neighbour)):
+               for e in (at, neighbour)):
             raise EditError(f"There is already a page break right {op.position} {op.target_id}; "
                             "a second one would only add an empty page.")
         p_el = page_break_paragraph()
         if op.position == "after":
-            target.addnext(p_el)
+            at.addnext(p_el)
         else:
-            target.addprevious(p_el)
+            at.addprevious(p_el)
         self._new_id(p_el)
         self._page_breaks_at[target] = (op.target_id, op.position)
         near = (paragraph_view(target).text if target.tag == W.p else "a table").strip()

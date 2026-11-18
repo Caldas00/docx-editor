@@ -799,3 +799,37 @@ def test_shape_fill_is_recoloured_in_both_copies():
     assert 'val="7030A0"' in block_xml(out, "p1")
     with pytest.raises(EditError, match="no shape"):
         run_plan(pkg, {"op": "set_shape_fill", "target": "#99", "color": "7030A0"})
+
+
+def test_page_break_goes_above_the_room_of_a_banner_drawn_above_its_paragraph():
+    # A real failure: "put this on a new page" broke right before the paragraph holding a
+    # banner drawn 68 px ABOVE it (over the empty lines before it), so on the new page the
+    # banner was cut off at the top. The break now goes above those empty lines.
+    banner = ('<w:r><w:drawing><wp:anchor><wp:positionH relativeFrom="page"><wp:posOffset>0'
+              '</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>'
+              '-647700</wp:posOffset></wp:positionV><wp:extent cx="7000000" cy="540000"/>'
+              '<wp:docPr id="30" name="Banner"/></wp:anchor></w:drawing></w:r>')
+    pkg = pkg_of(P(R("text")) + P("") + P("") + P(banner + R("NOTICES")) + P(R("legal")))
+    out, _ = run_plan(pkg, {"op": "insert_page_break", "target_id": "p3", "position": "before"})
+    assert list(texts(out).values())[:3] == ["text", "⟦PAGE BREAK⟧", ""]
+
+
+def test_moving_a_heading_below_its_own_text_at_the_end_is_refused():
+    # "put this on a new page at the end" on a section that already ends the document moved
+    # its heading below its own text; the engine now says to use a page break alone.
+    pkg = pkg_of(P(R("intro")) + P(R("Notices"), '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>')
+                 + P(R("legal text")) + P(R("more legal")) + P(""))
+    with pytest.raises(EditError, match="insert_page_break before p1 alone"):
+        run_plan(pkg, {"op": "move_blocks", "block_ids": ["p1"], "target_id": "p3",
+                       "position": "after"})
+    out, _ = run_plan(pkg, {"op": "move_blocks", "block_ids": ["p2"], "target_id": "p3",
+                            "position": "after"})  # ordinary text can still move
+    assert list(texts(out).values())[:4] == ["intro", "Notices", "more legal", "legal text"]
+
+
+def test_moving_a_section_past_other_sections_to_the_end_is_allowed():
+    h = '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
+    pkg = pkg_of(P(R("A"), h) + P(R("a text")) + P(R("B"), h) + P(R("b text")))
+    out, _ = run_plan(pkg, {"op": "move_blocks", "block_ids": ["p0", "p1"], "target_id": "p3",
+                            "position": "after"})
+    assert list(texts(out).values()) == ["B", "b text", "A", "a text"]

@@ -62,9 +62,9 @@ uv run docx-agent apply samples/input/session_note.docx \
 **Tests and evals**
 
 ```bash
-uv run pytest                    # 221 offline tests (no network, about 30 s)
+uv run pytest                    # 224 offline tests (no network, about 30 s)
 uv run pytest -m llm             # end-to-end tests against the real API
-uv run python evals/run.py       # behavioural evals against the real API (67 cases)
+uv run python evals/run.py       # behavioural evals against the real API (68 cases)
 ```
 
 **Using the web UI**
@@ -279,7 +279,7 @@ Python strings and tracks the origin of every character.
 9. OOXML structure rules hold: every table cell ends with a paragraph, and the body ends with
    its `sectPr`.
 
-**2. Offline test suite (221 tests, about 30 s, no network)**
+**2. Offline test suite (224 tests, about 30 s, no network)**
 
 - **Engine unit tests** (`test_ops.py`) cover each operation and each refusal. They use
   synthetic XML with split runs, hyperlinks, fields, tracked changes, content controls,
@@ -314,7 +314,7 @@ Python strings and tracks the origin of every character.
 
 **3. Behavioural evals against the real model (`evals/`)**
 
-There are 67 cases across 5 documents, some of them multi-message conversations run
+There are 68 cases across 5 documents, some of them multi-message conversations run
 exactly as the web UI runs them. They cover replacements in table cells, global
 renames, list items, sentence and paragraph deletion, new sections (heading and body),
 formatting, multi-edit instructions, link text, a word split across runs, an ambiguous date
@@ -342,7 +342,7 @@ passed. The runner also records token usage and estimated cost. Results are in
 
 | model | passed (× 3 runs) | median latency | avg cost / edit |
 |---|---|---|---|
-| **gpt-6-luna** (default, low reasoning) | **201/201** (67 cases) | 2.3 s | **$0.0002** |
+| **gpt-6-luna** (default, low reasoning) | **203/204** (68 cases) | 2.3 s | **$0.0002** |
 | gpt-5.4-mini | 90/90 (first 30 cases) | 2.2 s | $0.0012 |
 | gpt-5-mini | 90/90 (first 30 cases) | 3.3 s | $0.0007 |
 | gpt-5.5 (previous default) | 30/30 (1 run) | 2.3 s | $0.0118 |
@@ -350,9 +350,9 @@ passed. The runner also records token usage and estimated cost. Results are in
 The prompt was tuned against this suite. The first gpt-4.1 run scored 16/18; the two failures
 led to the rules about "one insert per style" and "ask when ONE thing has several candidates".
 Later, `gpt-6-luna` once picked a different purple, which led to the colour-name table in
-`agent/prompts.py`. The model is not deterministic: in the latest full run `ambiguous-date` once picked a date
-instead of asking and `selection-delete-starts-mid-paragraph` once kept an icon; re-run alone,
-each fails about 1 time in 8. The static rules come before the document in the prompt, so repeated calls
+`agent/prompts.py`. The model is not deterministic: in the latest full run
+`last-section-to-new-page-is-a-break-not-a-move` once asked whether to move the whole section
+instead of acting. Misses like this, seen once in a full run, pass when re-run alone. The static rules come before the document in the prompt, so repeated calls
 reuse the provider's prompt cache (over 99 % of input tokens on a follow-up call in a
 900-block document).
 

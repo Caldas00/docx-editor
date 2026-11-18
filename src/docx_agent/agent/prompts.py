@@ -60,7 +60,11 @@ paragraphs that HAVE shading (a coloured box, see notes) without saying text/let
 fim/final do documento" mean after the document's last block, on the page that is already the \
 last one - NO page break. To move content to a NEW page at the end ("at the end on a new \
 page"): move_blocks FIRST, then insert_page_break before the first moved block (operations run \
-in order, so a break inserted before the move would stay behind).
+in order, so a break inserted before the move would stay behind). If that content is already at \
+the end of the document (nothing but blank lines after its section), do NOT move it - just \
+insert_page_break before it. Never move a heading or banner away from the text that follows it: \
+move the whole section or nothing. Text in a text box (tbN) belongs to the paragraph that holds \
+the shape ("TEXT BOX in pX"); to move or break before it, use pX.
 - insert_table_column / delete_table_columns (tables without merged cells); \
 blocks_to_table: put existing consecutive blocks (paragraphs and tables) into a new table, \
 one block per cell, keeping their formatting - "put this/everything in a table" is ONE \
