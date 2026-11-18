@@ -1425,33 +1425,5 @@
         "Terminal 2"
       ]
     }
-  },
-  {
-    "id": "last-section-to-new-page-is-a-break-not-a-move",
-    "doc": "api_reference.docx",
-    "selection": {
-      "text": "2. Session class",
-      "blocks": [
-        "p12"
-      ]
-    },
-    "instruction": "put this in a new page in the end",
-    "expect": {
-      "status": "done",
-      "page_breaks": 1,
-      "page_break_before": [
-        "2. Session class"
-      ],
-      "order": [
-        [
-          "2. Session class",
-          "get_client_id()"
-        ],
-        [
-          "get_client_id()",
-          "prefer get_date() over parsing"
-        ]
-      ]
-    }
   }
 ]

@@ -128,13 +128,13 @@ flowchart LR
    tamper with correct outputs and require the verifier to catch it, a fuzz test with 1,200
    random plans (each one either refused or verified), and graph tests with a scripted LLM.
    They use synthetic documents built in memory (`tests/documents.py`).
-3. **Evals against the real model (`uv run python evals/run.py`).** 68 cases, including
+3. **Evals against the real model (`uv run python evals/run.py`).** 67 cases, including
    multi-message conversations, a prompt injection and ambiguous requests. Results are in
    [`evals/results/latest.md`](evals/results/latest.md).
 
 | model | passed | avg cost / edit |
 |---|---|---|
-| **gpt-6-luna** (default) | 203/204 (68 cases × 3) | $0.0002 |
+| **gpt-6-luna** (default) | 198/201 (67 cases × 3) | $0.0002 |
 | gpt-5.4-mini | 90/90 (30 cases × 3) | $0.0012 |
 | gpt-5.5 | 30/30 (1 run) | $0.0118 |
 
