@@ -27,12 +27,6 @@ For the real page layout in the **Document** view, install
 docker build -t docx-agent . && docker run --rm -p 8000:8000 --env-file .env docx-agent
 ```
 
-From the command line:
-
-```bash
-uv run docx-agent edit my.docx "Change the session number to 7 of 12" -o my.edited.docx
-```
-
 ## Features
 
 **Plain-language editing.** Describe the change in English or Portuguese. The agent works out
