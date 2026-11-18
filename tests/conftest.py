@@ -7,13 +7,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from docx_agent.document import DocxPackage  # noqa: E402
-from docx_agent.samples import (  # noqa: E402
+from documents import (  # noqa: E402
     build_api_reference,
     build_intake_form,
     build_referral_letter,
     build_session_note,
 )
+
+from docx_agent.document import DocxPackage  # noqa: E402
 
 
 @pytest.fixture(scope="session")

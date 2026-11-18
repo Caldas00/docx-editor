@@ -1,36 +1,11 @@
-"""The committed example outputs are reproducible from their plans (no LLM needed),
-and the HTML renderer marks exactly what changed."""
+"""The HTML preview shows the document's structure and the redline marks exactly what changed."""
 
-import json
 import re
-from pathlib import Path
 
-import pytest
 from helpers import BOLD, P, R, pkg_of, plan
 
-from docx_agent.document import DocxPackage, EditPlan, apply_plan, verify_edit
+from docx_agent.document import DocxPackage, apply_plan
 from docx_agent.document.render import render_preview, render_redline
-from docx_agent.document.verify import c14n
-
-SAMPLES = Path(__file__).resolve().parents[1] / "samples"
-EXAMPLES = sorted((SAMPLES / "output").glob("*.plan.json"))
-
-
-@pytest.mark.parametrize("plan_file", EXAMPLES, ids=lambda p: p.stem)
-def test_committed_example_replays_exactly(plan_file):
-    stem = plan_file.name.removesuffix(".plan.json")
-    before = DocxPackage((SAMPLES / "input" / f"{stem}.docx").read_bytes())
-    stored = DocxPackage((SAMPLES / "output" / f"{stem}.edited.docx").read_bytes())
-    p = EditPlan.model_validate(json.loads(plan_file.read_text()))
-    work = before.copy()
-    apply_plan(work, p)
-    assert verify_edit(before, work.to_bytes(), p).passed
-    assert verify_edit(before, stored.to_bytes(), p).passed
-    assert c14n(work.document) == c14n(stored.document)
-
-
-def test_examples_exist():
-    assert len(EXAMPLES) >= 3
 
 
 def test_preview_renders_structure(session_note):

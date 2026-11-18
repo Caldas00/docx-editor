@@ -1,4 +1,4 @@
-"""Synthetic sample documents (no real patient data).
+"""Synthetic test documents, built in memory (no real personal data).
 
 They deliberately contain the things that break naive editors: words split
 across runs, mixed bold/italic inside a sentence, hyperlinks, a field, a
@@ -9,7 +9,6 @@ merged and shaded cells, inline images, and an image in the header.
 from __future__ import annotations
 
 import io
-from pathlib import Path
 
 from docx import Document
 from docx.enum.section import WD_ORIENT  # noqa: F401  (kept for readers exploring options)
@@ -437,25 +436,10 @@ def build_travel_receipt() -> bytes:
     return buf.getvalue()
 
 
-SAMPLES = {
+DOCUMENTS = {
     "session_note.docx": build_session_note,
     "referral_letter.docx": build_referral_letter,
     "intake_form.docx": build_intake_form,
     "api_reference.docx": build_api_reference,
     "travel_receipt.docx": build_travel_receipt,
 }
-
-
-def write_samples(directory: Path) -> list[Path]:
-    directory.mkdir(parents=True, exist_ok=True)
-    out = []
-    for name, builder in SAMPLES.items():
-        path = directory / name
-        path.write_bytes(builder())
-        out.append(path)
-    return out
-
-
-if __name__ == "__main__":  # pragma: no cover
-    for p in write_samples(Path("samples/input")):
-        print(p)

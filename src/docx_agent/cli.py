@@ -130,15 +130,6 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
     uvicorn.run("docx_agent.web.app:app", host=host, port=port)
 
 
-@app.command()
-def samples(directory: Path = Path("samples/input")) -> None:
-    """(Re)generate the synthetic sample documents."""
-    from .samples import write_samples
-
-    for p in write_samples(directory):
-        console.print(str(p))
-
-
 def main() -> None:  # pragma: no cover
     app()
 

@@ -3,6 +3,7 @@
 import io
 
 import pytest
+from documents import build_session_note
 from fake_llm import ScriptedLLM, call, submit
 from fastapi.testclient import TestClient
 
@@ -24,6 +25,13 @@ def client(tmp_path, monkeypatch):
     web.set_service(None)
 
 
+def open_note(client) -> dict:
+    """Open the synthetic session note the way a user opens any file: by uploading it."""
+    data = build_session_note()
+    return client.post("/api/sessions/upload",
+                       files={"file": ("session_note.docx", io.BytesIO(data), "application/octet-stream")}).json()
+
+
 def use_script(*script) -> ScriptedLLM:
     llm = ScriptedLLM(script=list(script), seen=[])
     web.set_service(EditService(llm, Settings()))
@@ -37,12 +45,12 @@ def test_index_and_config(client):
     assert '/static/app.css?v=' in page.text and '/static/app.js?v=' in page.text
     assert page.headers["cache-control"] == "no-cache"
     cfg = client.get("/api/config").json()
-    assert {s["name"] for s in cfg["samples"]} >= {"session_note.docx", "referral_letter.docx"}
+    assert "samples" not in cfg and "exact_pages" in cfg
 
 
 def test_edit_flow_with_redline_download_and_undo(client):
     use_script(submit(GOOD))
-    s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
+    s = open_note(client)
     assert s["version"] == 0 and "Session Progress Note" in s["preview_html"]
 
     r = client.post(f"/api/sessions/{s['id']}/edit",
@@ -69,7 +77,7 @@ def test_edit_flow_with_redline_download_and_undo(client):
 def test_answer_is_a_new_message_that_sees_the_question(client):
     llm = use_script(call("ask_clarification", question="Which one?", options=["A", "B"]),
                      submit(GOOD))
-    s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
+    s = open_note(client)
     r = client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "change it"}).json()
     assert r["turn"]["status"] == "needs_clarification"
     assert r["turn"]["options"] == ["A", "B"]
@@ -84,7 +92,7 @@ def test_answer_is_a_new_message_that_sees_the_question(client):
 def test_history_includes_previous_edits(client):
     llm = use_script(submit(GOOD), submit({"op": "format_text", "block_id": "t0.r2.c1.p0",
                                            "find": "7 of 12", "bold": True}))
-    s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
+    s = open_note(client)
     client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "session 7"})
     client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "make it bold"})
     prompt = llm.seen[1][1].content
@@ -93,7 +101,7 @@ def test_history_includes_previous_edits(client):
 
 def test_decline_keeps_version(client):
     use_script(call("cannot_complete", reason="Not possible."))
-    s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
+    s = open_note(client)
     r = client.post(f"/api/sessions/{s['id']}/edit", json={"instruction": "x"}).json()
     assert r["turn"]["status"] == "declined" and r["session"]["version"] == 0
     assert len(r["session"]["turns"]) == 1
@@ -112,16 +120,17 @@ def test_upload_validation(client, session_note_bytes):
     assert ok.status_code == 200 and ok.json()["name"] == "evil name_.docx"
 
 
-def test_unknown_session_and_sample(client):
+def test_unknown_session(client):
     assert client.get("/api/sessions/nope").status_code == 404
-    assert client.post("/api/sessions/sample", json={"name": "../secret"}).status_code == 404
+    # the app ships no documents of its own: you open your own file
+    assert client.post("/api/sessions/sample", json={"name": "session_note.docx"}).status_code in (404, 405)
 
 
 def test_exact_pages_endpoint(client, monkeypatch):
     # The "Document" view shows the pages as LibreOffice lays them out (see web/exact.py).
     # Without it the endpoint says so and the UI uses its own layout.
     from docx_agent.web import exact
-    s = client.post("/api/sessions/sample", json={"name": "session_note.docx"}).json()
+    s = open_note(client)
     monkeypatch.setattr(exact, "engine", lambda: None)
     assert client.get("/api/config").json()["exact_pages"] is None
     assert client.get(f"/api/sessions/{s['id']}/pdf").status_code == 501

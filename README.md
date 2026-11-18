@@ -1,11 +1,11 @@
 # Docx Agent
 
 A LangGraph agent that edits **existing Word (.docx) documents** from plain-language
-instructions and changes **only** what the instruction asks for. Examples: "change the session
-number to 7 of 12", "make the green text purple", "remove the emojis", "make this bold" with
-text selected. Everything outside the edit stays byte-identical, and every edit is checked
-mechanically before it is saved. The default model (`gpt-6-luna`) costs about $0.0002 per
-edit.
+instructions and changes **only** what the instruction asks for. Open any .docx you have and
+ask for "change the date to 20 November", "make the green text purple", "remove the emojis",
+or select text and say "make this bold". Everything outside the edit stays byte-identical,
+and every edit is checked mechanically before it is saved. The default model (`gpt-6-luna`)
+costs about $0.0002 per edit.
 
 ![Web UI](docs/web-ui.png)
 
@@ -16,29 +16,70 @@ Requires Python ≥ 3.12, [uv](https://docs.astral.sh/uv/) and an OpenAI API key
 ```bash
 uv sync
 cp .env.example .env              # put your OPENAI_API_KEY in .env
-uv run docx-agent serve           # web UI on http://127.0.0.1:8000
+uv run docx-agent serve           # open http://127.0.0.1:8000 and drop in a .docx
 ```
 
-The web UI has a chat panel, lets you select text to point at it, shows a redline of each
-change, and keeps every version so you can undo or download it. With
-[LibreOffice](https://www.libreoffice.org) installed, the **Document** view shows the real
-pages (LibreOffice lays them out; Microsoft Word is not needed). The Docker image includes
-LibreOffice:
+For the real page layout in the **Document** view, install
+[LibreOffice](https://www.libreoffice.org) (`brew install --cask libreoffice` or
+`apt-get install libreoffice-writer`), or use Docker, which ships it:
 
 ```bash
 docker build -t docx-agent . && docker run --rm -p 8000:8000 --env-file .env docx-agent
 ```
 
-CLI, tests and evals:
+From the command line:
 
 ```bash
-uv run docx-agent edit samples/input/session_note.docx "Change the session number to 7 of 12" -o out.docx
-uv run pytest                     # 224 offline tests, about 30 s
-uv run python evals/run.py        # 68 behavioural cases against the real model
+uv run docx-agent edit my.docx "Change the session number to 7 of 12" -o my.edited.docx
 ```
 
-Samples in `samples/` are synthetic. [`samples/output/EXAMPLES.md`](samples/output/EXAMPLES.md)
-shows each instruction with its changes and verification report.
+## Features
+
+**Plain-language editing.** Describe the change in English or Portuguese. The agent works out
+which paragraphs, cells or rows are meant and edits only those. Typos, renames, new
+paragraphs, deletions and rewording all work the same way.
+
+**Formatting that survives.** Edited text keeps the exact formatting of the words around it:
+font, size, colour, bold and links. Text you do not touch is not rewritten at all, so styles,
+lists, images, fields and comments stay exactly as they were.
+
+**Formatting changes.** Bold, italic, underline, colours, highlight and font size on any
+text. You can also recolour by rule ("make all the green text purple"), change heading levels
+and styles, align paragraphs, or give a paragraph a background colour.
+
+**Tables.** Create tables (also from existing paragraphs), and add, delete, reorder or
+reverse rows. You can also add and delete columns, delete whole tables, and edit any cell's
+text.
+
+**Document structure.** Move, duplicate, split and merge paragraphs or whole sections. Add
+page breaks, add, remove or change links, and edit or create headers and footers with page
+numbers.
+
+**Pictures, text boxes and shapes.** Delete pictures or small icons and emojis. Edit text
+inside text boxes, which is how most documents converted from PDF hold their text, and
+recolour shapes such as coloured banners.
+
+**Select to point.** Select text in the document, as you would to copy it, and say "delete
+this", "translate this" or "make this blue". The agent acts on exactly what you selected.
+
+**A real conversation.** The chat remembers earlier messages, so "make it bold" or "use the
+same colour as the warning" work. When a request is ambiguous the agent asks instead of
+guessing, and it declines what it cannot do safely. You can keep typing while it works; new
+messages wait in a queue.
+
+**Real pages.** With LibreOffice installed, the Document view shows the pages exactly as a
+word processor lays them out, and highlights what the last edit changed. Microsoft Word is not
+needed. Without LibreOffice the app uses its own close HTML layout.
+
+**Review, versions and undo.** Every edit shows a redline of what changed, the checks it
+passed, its cost and its plan. Each edit is a version you can view, download or undo.
+
+**Marks.** Bookmark any passage. The scrollbar beside the document shows each mark, and what
+the last edit changed, so you can jump back to them.
+
+**Verified before saving.** Every edit runs 9 integrity checks against an independent
+replay of the plan before the file is written. If any check fails, nothing is saved and the
+agent corrects its plan.
 
 ## How it works
 
@@ -57,25 +98,21 @@ flowchart LR
   id such as `p5` or `t0.r2.c1.p0`) and returns an `EditPlan`. It never sees XML or runs code.
 - **Edits are addressed by block id plus exact anchor text**, not by offsets. A near-miss gets a
   "did you mean" hint and goes back to the planner, with a bounded number of retries.
-- **The engine (`document/ops.py`)** has 27 operations: text, formatting, paragraphs, tables,
-  rows and columns, pictures, text boxes and shapes, page breaks, links, headers and footers.
-  Only the `<w:t>` nodes inside the matched range change; other runs and their formatting are
-  never re-created.
-- **Ambiguity becomes a question** (a LangGraph `interrupt()`), and out-of-scope requests are
-  declined instead of guessed.
+- **A deterministic engine (`document/ops.py`) applies the plan.** It changes only the `<w:t>`
+  nodes inside the matched range; other runs and their formatting are never re-created.
 
 ## How integrity is verified
 
-1. **Runtime verifier (`document/verify.py`).** It runs 9 checks on every edit. It compares the
-   original, the result and an **independent oracle** (`oracle.py`), which replays the plan on
+1. **Runtime verifier (`document/verify.py`).** It runs 9 checks on every edit, comparing the
+   original, the result and an **independent oracle** (`oracle.py`) that replays the plan on
    plain strings. Untouched blocks must be XML-identical, edited text must match the oracle
    character for character with the same formatting, and element counts must match exactly.
-   On failure nothing is saved and the planner gets the report.
-2. **Offline tests.** Unit tests per operation, mutation tests that tamper with correct outputs
-   and require the verifier to catch it, a fuzz test with 1,200 random plans (each one either
-   refused or verified), and graph tests with a scripted LLM.
-3. **Evals against the real model.** 68 cases, including multi-message conversations, a prompt
-   injection and ambiguous requests. Results are in
+2. **Offline tests (`uv run pytest`, 218 tests).** Unit tests per operation, mutation tests that
+   tamper with correct outputs and require the verifier to catch it, a fuzz test with 1,200
+   random plans (each one either refused or verified), and graph tests with a scripted LLM.
+   They use synthetic documents built in memory (`tests/documents.py`).
+3. **Evals against the real model (`uv run python evals/run.py`).** 68 cases, including
+   multi-message conversations, a prompt injection and ambiguous requests. Results are in
    [`evals/results/latest.md`](evals/results/latest.md).
 
 | model | passed | avg cost / edit |

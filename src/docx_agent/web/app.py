@@ -34,48 +34,10 @@ from . import exact
 
 STATIC = Path(__file__).parent / "static"
 ROOT = Path(__file__).resolve().parents[3]
-SAMPLES_DIR = Path(os.getenv("DOCX_AGENT_SAMPLES", ROOT / "samples" / "input"))
 # Sessions live in memory, so each server process gets its own folder and only ever
 # cleans up that folder (several servers can run side by side).
 RUNS_DIR = Path(os.getenv("DOCX_AGENT_RUNS", ROOT / ".runs" / "web")) / f"server-{uuid.uuid4().hex[:8]}"
 MAX_UPLOAD = 20 * 1024 * 1024
-
-SAMPLE_INFO: dict[str, dict[str, Any]] = {
-    "session_note.docx": {
-        "title": "Session progress note",
-        "suggestions": [
-            "Update the session number to 7 of 12.",
-            "The clinician is now Dr. Ana Costa — update her name everywhere.",
-            "Add 'Grounding exercise (5-4-3-2-1)' as another intervention used.",
-            "Change the date to 20 November 2026.",
-        ],
-    },
-    "api_reference.docx": {
-        "title": "API reference",
-        "suggestions": [
-            "Make all the green text purple.",
-            "Remove the emojis.",
-            "Remove the set_date and set_modality rows from the table.",
-            "Add a row for void close() - 'Signs and closes the note.' after is_closed().",
-        ],
-    },
-    "referral_letter.docx": {
-        "title": "Referral letter",
-        "suggestions": [
-            "Address the letter to Dr. Rui Almeida instead.",
-            "In the summary table, change the anxiety status from Moderate to Mild.",
-            "Remove the word 'persistent'.",
-        ],
-    },
-    "intake_form.docx": {
-        "title": "Client intake form",
-        "suggestions": [
-            "Change the preferred name to Sam.",
-            "Make the consent sentence italic.",
-        ],
-    },
-}
-
 
 @dataclass
 class Version:
@@ -106,10 +68,6 @@ class Selection(BaseModel):
 class EditRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=2000)
     selection: Selection | None = None
-
-
-class SampleRequest(BaseModel):
-    name: str
 
 
 @asynccontextmanager
@@ -173,7 +131,6 @@ def _state(s: DocSession, view_version: int | None = None) -> dict[str, Any]:
     v_idx = len(s.versions) - 1 if view_version is None else view_version
     version = s.versions[v_idx]
     pkg = DocxPackage(version.path.read_bytes())
-    sample = SAMPLE_INFO.get(s.name)
     return {
         "id": s.id,
         "name": s.name,
@@ -184,7 +141,6 @@ def _state(s: DocSession, view_version: int | None = None) -> dict[str, Any]:
         "redline_html": version.redline_html,
         "turn": version.turn,
         "turns": s.turns,
-        "suggestions": sample["suggestions"] if sample else [],
     }
 
 
@@ -233,19 +189,9 @@ def index() -> HTMLResponse:
 
 @app.get("/api/config")
 def config() -> dict[str, Any]:
-    samples = [{"name": name, "title": info["title"]} for name, info in SAMPLE_INFO.items()
-               if (SAMPLES_DIR / name).exists()]
-    return {"model": get_settings().model, "samples": samples,
+    return {"model": get_settings().model,
             "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
             "exact_pages": exact.engine()}  # "libreoffice" / None
-
-
-@app.post("/api/sessions/sample")
-def open_sample(req: SampleRequest) -> dict[str, Any]:
-    if req.name not in SAMPLE_INFO or not (SAMPLES_DIR / req.name).exists():
-        raise HTTPException(404, "Unknown sample.")
-    s = _new_session(req.name, (SAMPLES_DIR / req.name).read_bytes())
-    return _state(s)
 
 
 @app.post("/api/sessions/upload")

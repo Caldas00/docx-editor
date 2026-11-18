@@ -1,7 +1,6 @@
 """Regression tests for issues found in code review."""
 
 import time
-from pathlib import Path
 
 import pytest
 from fake_llm import ScriptedLLM, call, submit
@@ -119,8 +118,3 @@ def test_deleted_cell_paragraph_is_shown_in_its_own_cell():
     html = render_redline(before, after, p)
     cells = html.split("<td")
     assert "B2 gone" in cells[2] and "B2 gone" not in cells[1]
-
-
-def test_samples_command_runs_without_dev_dependencies(tmp_path: Path):
-    from docx_agent.samples import SAMPLES, write_samples
-    assert len(write_samples(tmp_path)) == len(SAMPLES)

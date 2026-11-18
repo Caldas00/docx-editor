@@ -12,6 +12,5 @@
   (see `tests/helpers.py`).
 - Only `word/document.xml` may be rewritten. Never re-serialise other package parts.
 - The LLM never edits XML or runs code; it only produces an `EditPlan`. Keep that boundary.
-- Sample documents must stay synthetic. No real personal or health data.
-- If you change the edit semantics, regenerate the examples with
-  `uv run python scripts/make_examples.py` (the replay tests compare against them).
+- The app ships no documents. Test and eval documents are synthetic and built in memory
+  (`tests/documents.py`); never commit real personal or health data, or a user's file.

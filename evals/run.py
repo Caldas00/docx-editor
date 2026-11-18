@@ -3,7 +3,7 @@
     uv run python evals/run.py                       # default model
     uv run python evals/run.py --models gpt-4.1,gpt-5.4-mini --repeat 2
 
-Each case runs the full agent (plan → apply → verify) on a sample document and
+Each case runs the full agent (plan → apply → verify) on a synthetic test document and
 checks the *outcome*: status, required/forbidden text, styles of new
 paragraphs, bold/italic of edited text, and how many original paragraphs
 changed (to catch over-editing). Results are written to evals/results/.
@@ -12,8 +12,10 @@ changed (to catch over-editing). Results are written to evals/results/.
 from __future__ import annotations
 
 import argparse
+import atexit
 import difflib
 import json
+import shutil
 import statistics
 import sys
 import tempfile
@@ -24,6 +26,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tests"))
+
+from documents import DOCUMENTS  # noqa: E402
 
 from docx_agent.agent.llm import make_llm  # noqa: E402
 from docx_agent.config import Settings  # noqa: E402
@@ -40,7 +45,11 @@ from docx_agent.document.ns import W, qn  # noqa: E402
 from docx_agent.pricing import estimate_cost  # noqa: E402
 from docx_agent.service import EditService  # noqa: E402
 
-SAMPLES = ROOT / "samples" / "input"
+# the synthetic test documents (tests/documents.py), built fresh for this run
+DOCS = Path(tempfile.mkdtemp(prefix="docx-evals-"))
+for _name, _build in DOCUMENTS.items():
+    (DOCS / _name).write_bytes(_build())
+atexit.register(shutil.rmtree, DOCS, ignore_errors=True)
 
 
 def paragraphs(path: Path) -> list[tuple[str, str, object]]:
@@ -239,7 +248,7 @@ def run_case(case: dict, model: str) -> Result:
     latest version with the conversation so far, exactly like the web UI."""
     settings = Settings(model=model, **case.get("settings", {}))
     service = EditService(make_llm(settings), settings)
-    current = SAMPLES / case["doc"]
+    current = DOCS / case["doc"]
     steps = [{"instruction": case["instruction"], "selection": case.get("selection"),
               "expect": case["expect"]}] + case.get("followups", [])
     turns: list[dict] = []
@@ -259,13 +268,13 @@ def run_case(case: dict, model: str) -> Result:
                 for k in usage:
                     usage[k] += (outcome.usage or {}).get(k, 0)
                 errors = [f"step {n + 1}: {e}" if len(steps) > 1 else e
-                          for e in check(step["expect"], outcome, SAMPLES / case["doc"], out)]
+                          for e in check(step["expect"], outcome, DOCS / case["doc"], out)]
                 if errors:
                     break
                 if n == 0 and "answer" in case:  # LangGraph interrupt/resume path (CLI)
                     outcome = service.resume(outcome.thread_id, case["answer"])
                     calls += outcome.llm_calls
-                    errors = check(case["expect_after"], outcome, SAMPLES / case["doc"], out)
+                    errors = check(case["expect_after"], outcome, DOCS / case["doc"], out)
                     if errors:
                         break
                 turns.append({"instruction": step["instruction"],

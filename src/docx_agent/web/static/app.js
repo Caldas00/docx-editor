@@ -6,7 +6,6 @@ const state = {
   view: "redline", // "redline" | "clean"
   selection: null, // {text, blocks} the user pointed at
   busy: false,
-  samples: [],
   expanded: new Set(), // turn indexes whose change list is expanded
   marks: [],       // the user's own markers: [{id, text, at}] (found again by their text)
   pending: null,   // {text, selection} of the message the agent is working on
@@ -70,10 +69,6 @@ async function boot() {
         "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
       $("view-clean").title = "The document laid out page by page by LibreOffice";
     }
-    state.samples = cfg.samples;
-    $("samples").innerHTML = '<span>or try a sample:</span>' + cfg.samples.map((s) =>
-      `<button type="button" data-name="${esc(s.name)}">${esc(s.title)}</button>`).join("");
-    $("samples").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => openSample(b.dataset.name)));
     if (!cfg.has_api_key) toast("OPENAI_API_KEY is not set - edits will fail.", 8000);
   } catch (e) { toast(e.message); }
   const params = new URLSearchParams(location.search);
@@ -86,9 +81,6 @@ async function boot() {
 }
 
 /* ============================================================== documents */
-async function openSample(name) {
-  try { state.view = "redline"; showSession(await post("/api/sessions/sample", { name })); } catch (e) { toast(e.message); }
-}
 async function uploadFile(file) {
   if (!file) return;
   if (!/\.docx$/i.test(file.name)) return toast("Please choose a .docx file.");
@@ -531,7 +523,6 @@ function renderChat(pendingInstruction) {
     parts.push(`<div class="empty-chat">
       <h3>What should change?</h3>
       <p>Describe an edit in plain language, or select text in the document first and say what to do with it.</p>
-      ${s.suggestions.length ? `<div class="suggestions">${s.suggestions.map((t) => `<button type="button">${esc(t)}</button>`).join("")}</div>` : ""}
     </div>`);
   }
   s.turns.forEach((t) => parts.push(...turnHtml(t)));
@@ -541,11 +532,6 @@ function renderChat(pendingInstruction) {
   }
   state.queue.forEach((q, n) => parts.push(userBubble(q.text, q.selection, n)));
   box.innerHTML = parts.join("");
-  box.querySelectorAll(".suggestions button").forEach((b) => b.addEventListener("click", () => {
-    $("instruction").value = b.textContent;
-    autoGrow();
-    $("instruction").focus();
-  }));
   box.querySelectorAll("[data-answer]").forEach((b) => b.addEventListener("click", () => send(b.dataset.answer)));
   box.querySelectorAll("[data-version]").forEach((b) => b.addEventListener("click", () => viewVersion(Number(b.dataset.version))));
   box.querySelectorAll("[data-undo]").forEach((b) => b.addEventListener("click", undo));
