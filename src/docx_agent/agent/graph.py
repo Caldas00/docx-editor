@@ -291,9 +291,8 @@ class DocxEditAgent:
             f"User's answer: {answer}"
         )
         return {"messages": [*(_not_executed(c) for c in ai.tool_calls[1:]),
-                             ToolMessage(content=f"The user answered: {answer}",
-                                         tool_call_id=call["id"]),
-                             HumanMessage(content=resolution)]}
+                             ToolMessage(content=f"The user answered: {answer}\n\n{resolution}",
+                                         tool_call_id=call["id"])]}
 
     def decline(self, state: AgentState) -> dict[str, Any]:
         call = state["messages"][-1].tool_calls[0]
