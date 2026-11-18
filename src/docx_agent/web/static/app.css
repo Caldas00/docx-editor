@@ -365,7 +365,9 @@ kbd { font: 500 10.5px var(--font); border: 1px solid var(--border-strong); bord
 .paper.exact .exact-page canvas { display: block; width: 100%; height: 100%; }
 .exact-loading { display: flex; align-items: center; gap: 10px; justify-content: center; padding: 120px 0; color: var(--muted); font: 13px var(--font); }
 /* pdf.js text layer: invisible text over the page, so it can be selected like in Word */
-.textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; z-index: 2; }
+/* The text layer lies over the drawn page. Multiplying it onto the page tints the paper and
+   leaves the printed letters dark, so selected, marked or changed text stays readable. */
+.textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; z-index: 2; mix-blend-mode: multiply; }
 .textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
 .textLayer span.markedContent { top: 0; height: 0; }
 .textLayer ::selection { background: rgba(134, 239, 172, .55); }
