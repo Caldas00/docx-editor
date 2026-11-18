@@ -47,16 +47,17 @@ class ReadBlocks(BaseModel):
 class AskClarification(BaseModel):
     """Ask the user to resolve a genuine ambiguity before editing."""
 
-    question: str = Field(description="Short question for the user.")
+    question: str = Field(description="Short question for the user, written in English.")
     options: list[str] = Field(
-        default_factory=list, description="Concrete choices to offer, if any (max 5)."
+        default_factory=list,
+        description="Concrete choices in English to offer, if any (max 5).",
     )
 
 
 class CannotComplete(BaseModel):
     """Stop without editing and tell the user why."""
 
-    reason: str
+    reason: str = Field(description="Concise explanation for the user, written in English.")
 
 
 def _tool(schema: type[BaseModel], name: str, description: str | None = None) -> dict[str, Any]:
@@ -71,6 +72,7 @@ def planner_tools() -> list[dict[str, Any]]:
     return [
         _tool(EditPlan, SUBMIT,
               "Submit the complete list of edit operations that fulfils the instruction. "
+              "Write the plan summary in English. "
               "They are applied in order and then verified."),
         _tool(AskClarification, CLARIFY),
         _tool(CannotComplete, DECLINE),

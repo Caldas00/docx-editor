@@ -507,7 +507,7 @@ class EditPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    summary: str = Field(description="One sentence describing the change for the user.")
+    summary: str = Field(description="One sentence describing the change for the user, in English.")
     operations: list[EditOp] = Field(min_length=1, max_length=60)
 
 
