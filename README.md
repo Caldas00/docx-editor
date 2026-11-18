@@ -32,6 +32,24 @@ Optional: install [LibreOffice](https://www.libreoffice.org) (`brew install --ca
 on macOS, `apt-get install libreoffice-writer` on Linux) and the **Document** view shows the
 real pages, laid out by LibreOffice. Without it the app shows its own close approximation.
 
+## Sample edit
+
+The repository includes a synthetic workshop schedule and the result of one edit. The input
+contains a formatted location line and an agenda table, which remain unchanged in the output.
+
+- **Input:** [workshop_schedule_before.docx](examples/workshop_schedule_before.docx)
+- **Instruction:** “Move the workshop to 19 December 2026.”
+- **Result:** [workshop_schedule_after.docx](examples/workshop_schedule_after.docx) — the date is
+  changed to 19 December 2026.
+
+To try the same edit with the agent, start the web app and upload the input document, or run:
+
+```bash
+uv run docx-agent edit examples/workshop_schedule_before.docx \
+  "Move the workshop to 19 December 2026." \
+  --output /tmp/workshop_schedule_after.docx
+```
+
 ## Features
 
 **Plain-language editing.** Describe the change in your own words. The agent works out
