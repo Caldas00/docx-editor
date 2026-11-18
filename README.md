@@ -13,11 +13,20 @@ costs about $0.0002 per edit.
 
 Requires Python ≥ 3.12, [uv](https://docs.astral.sh/uv/) and an OpenAI API key.
 
-```bash
-uv sync
-cp .env.example .env              # put your OPENAI_API_KEY in .env
-uv run docx-agent serve           # open http://127.0.0.1:8000 and drop in any .docx
-```
+1. Install and create the settings file:
+
+   ```bash
+   uv sync
+   cp .env.example .env
+   ```
+
+2. Open `.env` and replace `sk-...` with your OpenAI API key.
+
+3. Start the app, then open http://127.0.0.1:8000 and drop in any .docx:
+
+   ```bash
+   uv run docx-agent serve
+   ```
 
 Optional: install [LibreOffice](https://www.libreoffice.org) (`brew install --cask libreoffice`
 on macOS, `apt-get install libreoffice-writer` on Linux) and the **Document** view shows the
@@ -25,7 +34,7 @@ real pages, laid out by LibreOffice. Without it the app shows its own close appr
 
 ## Features
 
-**Plain-language editing.** Describe the change in English or Portuguese. The agent works out
+**Plain-language editing.** Describe the change in your own words. The agent works out
 which paragraphs, cells or rows are meant and edits only those. Typos, renames, new
 paragraphs, deletions and rewording all work the same way.
 
