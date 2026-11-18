@@ -134,7 +134,7 @@ flowchart LR
 
 | model | passed | avg cost / edit |
 |---|---|---|
-| **gpt-6-luna** (default) | 198/201 (67 cases × 3) | $0.0002 |
+| **gpt-6-luna** (default) | 201/201 (67 cases × 3) | $0.0002 |
 | gpt-5.4-mini | 90/90 (30 cases × 3) | $0.0012 |
 | gpt-5.5 | 30/30 (1 run) | $0.0118 |
 

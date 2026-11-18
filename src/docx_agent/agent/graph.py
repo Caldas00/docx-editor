@@ -75,6 +75,25 @@ def selection_coverage(pkg: DocxPackage, blocks: list[str], text: str) -> tuple[
     return whole, part
 
 
+def selection_plan_error(pkg: DocxPackage, selection: dict[str, Any] | None,
+                         plan: EditPlan) -> str | None:
+    """Reject whole-paragraph deletion when the user selected only part of that paragraph.
+
+    Selection boundaries are user intent. A planner mistake here can silently delete text
+    the user never highlighted, so this boundary is enforced before applying edits.
+    """
+    if not selection or not (selection.get("text") or "").strip():
+        return None
+    blocks = [str(b) for b in selection.get("blocks", [])[:40]]
+    _, partial = selection_coverage(pkg, blocks, selection["text"])
+    partial_ids = set(partial)
+    for op in plan.operations:
+        if op.op == "delete_paragraph" and op.block_id in partial_ids:
+            return (f"{op.block_id} is only partially selected. Do not delete the whole paragraph; "
+                    "use delete_text for only the selected words and keep the rest of the paragraph.")
+    return None
+
+
 class AgentState(TypedDict, total=False):
     # inputs
     instruction: str
@@ -212,6 +231,9 @@ class DocxEditAgent:
         except ValidationError as exc:
             return reject(_format_validation_error(exc))
         pkg = DocxPackage(Path(state["input_path"]).read_bytes())
+        scope_error = selection_plan_error(pkg, state.get("selection"), plan)
+        if scope_error:
+            return reject(scope_error)
         work = pkg.copy()
         try:
             result = DocumentEditor(work).apply(plan)
@@ -257,9 +279,21 @@ class DocxEditAgent:
         except ValidationError:
             payload = {"question": str(call["args"]), "options": []}
         answer = interrupt(payload)
+        question = payload.get("question", "Please clarify.")
+        options = "; ".join(payload.get("options") or [])
+        resolution = (
+            "The user has answered the clarification question. This resolves the target of the "
+            "original request; continue that edit using the answer, and do not ask again about "
+            "this choice.\n"
+            f"Original request: {state.get('instruction', '')}\n"
+            f"Question: {question}\n"
+            f"Choices offered: {options or '(none)'}\n"
+            f"User's answer: {answer}"
+        )
         return {"messages": [*(_not_executed(c) for c in ai.tool_calls[1:]),
                              ToolMessage(content=f"The user answered: {answer}",
-                                         tool_call_id=call["id"])]}
+                                         tool_call_id=call["id"]),
+                             HumanMessage(content=resolution)]}
 
     def decline(self, state: AgentState) -> dict[str, Any]:
         call = state["messages"][-1].tool_calls[0]

@@ -126,6 +126,8 @@ does not say where applies to the selection only. The selection is the EXACT tex
 highlighted - use it as `find` (or the part of it that must change) in the listed blocks. \
 If it covers whole paragraphs ("Selected completely") and the user wants it gone, delete \
 those paragraphs (rule 5); in paragraphs "Selected only in part", delete only the selected words.
+Never delete a whole paragraph marked "Selected only in part"; the edit engine rejects that \
+because it would remove unselected text.
 10. A <conversation> block holds the earlier messages of this chat and what you did. The \
 document below is the CURRENT version, after those edits (unless one was undone). Use the \
 conversation to resolve references ("the same colours as the others", "make it bold", "those \
@@ -138,7 +140,10 @@ E.g. "put this on a new page" then "no, on the last page" / "para a última folh
 content after the document's last block and DELETE the page break you added (it must not start \
 a new page any more); "I wanted it at the end on a new page": move the break you added \
 TOGETHER with the content (one move_blocks, the break's id first). Never say you cannot see \
-earlier messages.
+earlier messages. In particular, after adding a break before a selected section, "para a última \
+folha" means move the whole section to the end, delete that added break, and leave existing \
+breaks elsewhere alone. Check the final outline for a stray break before the section that took \
+its place.
 11. Never rebuild existing content by deleting it and typing it again somewhere else (that \
 loses formatting, pictures and links): to move content use move_blocks, to put it in a table \
 use blocks_to_table, to copy it use duplicate_blocks, to restructure paragraphs use \
