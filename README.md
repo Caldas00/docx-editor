@@ -11,21 +11,26 @@ costs about $0.0002 per edit.
 
 ## Quick start
 
-Requires Python ≥ 3.12, [uv](https://docs.astral.sh/uv/) and an OpenAI API key.
+You need an OpenAI API key. Copy `.env.example` to `.env` and put the key in it. Then run the
+app in one of two ways:
 
-```bash
-uv sync
-cp .env.example .env              # put your OPENAI_API_KEY in .env
-uv run docx-agent serve           # open http://127.0.0.1:8000 and drop in a .docx
-```
-
-For the real page layout in the **Document** view, install
-[LibreOffice](https://www.libreoffice.org) (`brew install --cask libreoffice` or
-`apt-get install libreoffice-writer`), or use Docker, which ships it:
+**Option 1: with Docker (nothing else to install).** The image already includes LibreOffice,
+which draws the real pages in the **Document** view.
 
 ```bash
 docker build -t docx-agent . && docker run --rm -p 8000:8000 --env-file .env docx-agent
 ```
+
+**Option 2: directly with Python.** Needs Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
+Install [LibreOffice](https://www.libreoffice.org) too (`brew install --cask libreoffice` on
+macOS) to see the real pages; without it the app shows its own close approximation.
+
+```bash
+uv sync
+uv run docx-agent serve
+```
+
+Then open http://127.0.0.1:8000 and drop in any .docx.
 
 ## Features
 
@@ -101,7 +106,7 @@ flowchart LR
    original, the result and an **independent oracle** (`oracle.py`) that replays the plan on
    plain strings. Untouched blocks must be XML-identical, edited text must match the oracle
    character for character with the same formatting, and element counts must match exactly.
-2. **Offline tests (`uv run pytest`, 218 tests).** Unit tests per operation, mutation tests that
+2. **Offline tests (`uv run pytest`, 220 tests).** Unit tests per operation, mutation tests that
    tamper with correct outputs and require the verifier to catch it, a fuzz test with 1,200
    random plans (each one either refused or verified), and graph tests with a scripted LLM.
    They use synthetic documents built in memory (`tests/documents.py`).

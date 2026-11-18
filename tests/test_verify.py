@@ -319,3 +319,26 @@ def test_detects_unplanned_change_in_a_text_box():
     apply_plan(work, p)
     next(t for t in work.body.iter(W.t) if t.text == "ZURICH ZURICH AIRPORT").text = "X"
     assert failing(verify_edit(pkg, work.to_bytes(), p))
+
+
+def test_detects_a_wrong_cell_width_after_a_new_column():
+    # A new column shares the table's width: every cell must take exactly its column's
+    # new width, and the grid must add up to the old total.
+    from helpers import P, R, pkg_of
+    from test_ops import _sized_table
+
+    from docx_agent.document.ns import qn
+    before = pkg_of(P(R("x")) + _sized_table([3000, 3000], [["A", "B"], ["a", "b"]]) + P(R("y")))
+    p = plan({"op": "insert_table_column", "table_id": "t0", "column": 0, "position": "after",
+              "cells": ["M", "m"]})
+    for tamper in ("old cell", "new cell", "grid"):
+        work = before.copy()
+        apply_plan(work, p)
+        assert verify_edit(before, work.to_bytes(), p).passed
+        tbl = build_index(work).get("t0").element
+        cells = tbl.findall(f"{W.tr}/{W.tc}")
+        if tamper == "grid":
+            tbl.find(qn("w:tblGrid"))[0].set(W.w_attr, "3000")
+        else:  # the first cell is an original one, the second the new one
+            cells[0 if tamper == "old cell" else 1].find(f"{W.tcPr}/{qn('w:tcW')}").set(W.w_attr, "3000")
+        assert not verify_edit(before, work.to_bytes(), p).passed, tamper

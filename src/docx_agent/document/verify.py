@@ -48,6 +48,7 @@ from .ops import (
     page_break_paragraph,
     recolor_drawing,
     sanitize_copy,
+    set_cell_width,
     table_grid_widths,
     without_sectpr,
 )
@@ -561,7 +562,12 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
         n_untouched += 1
         act_el = _blank_boxes(act.element, a_boxes) if act.kind == "p" else act.element
         act_item = StreamItem(act.kind, _strip_refs(act_el, new_rel_ids), act.owner)
-        if item_signature(exp.before, b_boxes) != item_signature(act_item):
+        want = exp.before
+        if exp.kind == "tc" and "width" in exp.spec:  # a column was added: cells share the width
+            cell = copy.deepcopy(exp.before.element)
+            set_cell_width(cell, exp.spec["width"])
+            want = StreamItem("tc", cell, exp.before.owner)
+        if item_signature(want, b_boxes) != item_signature(act_item):
             untouched_bad.append(exp.block_id or exp.kind)
     # a text box's VML copy: unchanged with the box, or the same content as the edited box
     before_boxes = {text_box_name(b): b for _, b in text_boxes(before.body)}
@@ -651,6 +657,7 @@ def verify_edit(before: DocxPackage, after_bytes: bytes, plan: EditPlan) -> Veri
                 want = new_table_cell(exp.spec["table"].spec["widths"][exp.spec["col"]])
             else:
                 want = new_cell_skeleton(tpl)
+                set_cell_width(want, exp.spec.get("width"))
             if item_signature(act) != item_signature(StreamItem("tc", want)):
                 new_bad.append("new cell: cell properties differ from the template cell")
             continue

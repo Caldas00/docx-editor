@@ -833,3 +833,29 @@ def test_moving_a_section_past_other_sections_to_the_end_is_allowed():
     out, _ = run_plan(pkg, {"op": "move_blocks", "block_ids": ["p0", "p1"], "target_id": "p3",
                             "position": "after"})
     assert list(texts(out).values()) == ["B", "b text", "A", "a text"]
+
+
+def _sized_table(widths: list[int], rows: list[list[str]]) -> str:
+    grid = "".join(f'<w:gridCol w:w="{w}"/>' for w in widths)
+    body = "".join("<w:tr>" + "".join(
+        f'<w:tc><w:tcPr><w:tcW w:w="{w}" w:type="dxa"/></w:tcPr>{P(R(c))}</w:tc>'
+        for w, c in zip(widths, row)) + "</w:tr>" for row in rows)
+    return f"<w:tbl><w:tblPr/><w:tblGrid>{grid}</w:tblGrid>{body}</w:tbl>"
+
+
+def test_new_column_shares_the_table_width_instead_of_widening_it():
+    # Adding a "Trend" column to a 3-column table that filled the text width copied a
+    # column's width, so the table grew by a third and ran past the right margin.
+    pkg = pkg_of(P(R("x")) + _sized_table([2880, 2880, 2880], [["Area", "Status", "Notes"],
+                                                               ["Sleep", "Good", "ok"]]) + P(R("y")))
+    out, _ = run_plan(pkg, {"op": "insert_table_column", "table_id": "t0", "column": 1,
+                            "position": "after", "cells": ["Trend", "Up"]})
+    tbl = build_index(out).get("t0").element
+    grid = [int(g.get(f"{{{W_NS}}}w")) for g in tbl.iter(f"{{{W_NS}}}gridCol")]
+    assert sum(grid) == 8640 and grid == [2160, 2160, 2160, 2160]
+    cell_widths = {int(w.get(f"{{{W_NS}}}w")) for w in tbl.iter(f"{{{W_NS}}}tcW")}
+    assert cell_widths == {2160}
+    assert texts(out)["t0.r0.c2.p0"] == "Trend"
+
+
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"

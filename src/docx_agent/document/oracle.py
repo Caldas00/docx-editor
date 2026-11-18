@@ -66,6 +66,7 @@ from .ops import (
     find_all,
     find_drawing,
     first_free_docpr_id,
+    grid_after_column_insert,
     image_selected,
     is_blank_paragraph,
     merge_separator_needed,
@@ -555,15 +556,18 @@ class Oracle:
 
     def _op_insert_table_column(self, op: InsertTableColumn) -> None:
         table = self._entry(op.table_id, ("tbl",))
-        grid = self._grid(table)
+        grid = grid_after_column_insert(self._grid(table), op.column, op.position)
+        at_col = op.column + (1 if op.position == "after" else 0)
         for cells, text in zip(self._rows_and_cells(table), op.cells):
             cell = cells[op.column]
             lst, i, j = self._span(cell)
             new = self._new_cell_entries(cell.before.element, text)
             new[0].spec["row_el"] = cell.before.owner
+            new[0].spec["width"] = grid[at_col]
             at = j if op.position == "after" else i
             lst[at:at] = new
-        grid.insert(op.column + (1 if op.position == "after" else 0), grid[op.column])
+            for k, old in enumerate(cells):  # every cell takes its column's new width
+                old.spec["width"] = grid[k + (1 if k >= at_col else 0)]
         table.spec["grid"] = grid
         table.modified = True
 

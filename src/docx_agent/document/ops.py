@@ -885,6 +885,32 @@ def new_table_row(header: bool) -> etree._Element:
     return tr
 
 
+def grid_after_column_insert(grid: list[str | None], column: int,
+                             position: str) -> list[str | None]:
+    """Column widths after inserting a copy of ``column``. When every width is known the
+    columns share the table's old total width, so the table never grows past the margin
+    (Word itself keeps the table width when you insert a column). Shared with the oracle."""
+    new = list(grid)
+    new.insert(column + (1 if position == "after" else 0), grid[column])
+    if not grid or not all(w and w.isdigit() for w in grid):
+        return new
+    total = sum(int(w) for w in grid)
+    if total <= 0:
+        return new
+    scaled = [int(w) * total // (total + int(grid[column])) for w in new]
+    scaled[-1] += total - sum(scaled)  # the last column takes the rounding
+    return [str(w) for w in scaled]
+
+
+def set_cell_width(tc: etree._Element, width: str | None) -> None:
+    """Give a cell its column's width, when the cell has a fixed (twips) width."""
+    tcpr = tc.find(W.tcPr)
+    tcw = tcpr.find(qn("w:tcW")) if tcpr is not None else None
+    if width is None or tcw is None or tcw.get(W.type, "dxa") != "dxa":
+        return
+    tcw.set(W.w_attr, width)
+
+
 def new_table_cell(width: int) -> etree._Element:
     tc = etree.Element(W.tc, nsmap=_W_NSMAP)
     etree.SubElement(etree.SubElement(tc, W.tcPr), qn("w:tcW"),
@@ -2312,11 +2338,16 @@ class DocumentEditor:
         if len(op.cells) != len(rows):
             raise EditError(f"{op.table_id} has {len(rows)} rows; give exactly one text per row.")
         grid = tbl.find(qn("w:tblGrid"))
+        widths = grid_after_column_insert([g.get(W.w_attr) for g in grid], op.column,
+                                          op.position)
         new_col = copy.deepcopy(grid[op.column])
         if op.position == "after":
             grid[op.column].addnext(new_col)
         else:
             grid[op.column].addprevious(new_col)
+        for g, w in zip(grid, widths):
+            if w is not None:
+                g.set(W.w_attr, w)
         for cells, text in zip(rows, op.cells):
             tc = cells[op.column]
             new_tc = new_cell_skeleton(tc)
@@ -2329,6 +2360,9 @@ class DocumentEditor:
                 tc.addnext(new_tc)
             else:
                 tc.addprevious(new_tc)
+        for tr in tbl.findall(W.tr):
+            for tc, w in zip(tr.findall(W.tc), widths):
+                set_cell_width(tc, w)
         self._cols_changed.add(tbl)
         self._touch(tbl)
         self._record(idx, "insert_table_column", op.table_id, None,
