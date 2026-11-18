@@ -210,14 +210,18 @@ async function renderExact() {
   fitPages();
   // the picture and the selectable text layer are built side by side (a background tab may
   // hold back canvas drawing; selection should not wait for it)
-  await Promise.all(sheets.map(({ page, vp, canvas, layer }) => Promise.all([
+  sheets.forEach(({ page, vp, canvas }) => {
     page.render({ canvasContext: canvas.getContext("2d"), viewport: vp,
-      transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null }).promise.catch(() => {}),
-    page.getTextContent().then((text) => pdfjsLib.renderTextLayer({
+      transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null }).promise.catch(() => {});
+  });
+  await Promise.all(sheets.map(({ page, vp, layer }) => page.getTextContent()
+    .then((text) => pdfjsLib.renderTextLayer({
       textContentSource: text, container: layer, viewport: vp, textDivs: [] }).promise)
-      .catch(() => {}),
-  ])));
-  if (token === paginate.n) renderRail();
+    .catch(() => {})));
+  if (token === paginate.n) {
+    paintExactChanges();
+    renderRail();
+  }
 }
 // The block ids of a selection made on exact pages: find each selected line in the HTML copy.
 function blocksForText(text) {
@@ -895,7 +899,8 @@ async function run(text, selection) {
   setBusy(true, state.pending);
   try {
     const res = await post(`/api/sessions/${state.session.id}/edit`, { instruction: text, selection });
-    if (res.turn.status === "done") state.view = "redline";
+    // after an edit, show the real pages (with the change highlighted) when we have them
+    if (res.turn.status === "done") state.view = state.exact ? "clean" : "redline";
     state.busy = false;
     clearSelection();
     showSession(res.session);
@@ -921,8 +926,45 @@ async function undo() {
 
 async function scrollToFirstChange() {
   await state.layout; // the pages must be laid out before we know where the change is
+  if ($("paper").classList.contains("exact")) {
+    const r = state.exactChanges && state.exactChanges[0];
+    if (r) scrollPaperTo(r.getBoundingClientRect().top, 2);
+    return;
+  }
   const first = $("paper").querySelector(CHANGE_SEL);
   if (first) scrollPaperTo(first.getBoundingClientRect().top, 2);
+}
+
+// On the real pages, highlight the paragraphs the last edit changed. They are found by text:
+// the redline knows which paragraphs changed; their new text is looked up on the pages
+// (ignoring spaces, which the PDF text layer splits differently).
+function paintExactChanges() {
+  state.exactChanges = [];
+  if (window.CSS && CSS.highlights) CSS.highlights.delete("docx-change");
+  const s = state.session;
+  if (!s.redline_html || !(window.CSS && CSS.highlights && window.Highlight)) return;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = s.redline_html;
+  const changed = [...tmp.querySelectorAll(".para")].filter((p) =>
+    p.matches(".block-ins, .block-moved, .block-fmt") || p.querySelector(":scope > ins, :scope > .fmt-changed, ins, .fmt-changed"));
+  const idx = textIndex();
+  const map = [];
+  let compact = "";
+  for (let i = 0; i < idx.text.length; i++) {
+    if (!/\s/.test(idx.text[i])) { map.push(i); compact += idx.text[i]; }
+  }
+  let from = 0;
+  for (const p of changed) {
+    p.querySelectorAll("del, .num-label").forEach((d) => d.remove());
+    const needle = p.textContent.replace(/\s+/g, "");
+    if (needle.length < 2) continue;
+    let k = compact.indexOf(needle, from);
+    if (k < 0) k = compact.indexOf(needle);
+    if (k < 0) continue;
+    from = k + needle.length;
+    state.exactChanges.push(rangeAt(idx, map[k], map[k + needle.length - 1] + 1));
+  }
+  if (state.exactChanges.length) CSS.highlights.set("docx-change", new Highlight(...state.exactChanges));
 }
 
 /* ================================================================== events */
