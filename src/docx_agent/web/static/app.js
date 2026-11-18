@@ -217,12 +217,66 @@ async function renderExact() {
   await Promise.all(sheets.map(({ page, vp, layer }) => page.getTextContent()
     .then((text) => pdfjsLib.renderTextLayer({
       textContentSource: text, container: layer, viewport: vp, textDivs: [] }).promise)
+    .then(() => addEndOfContent(layer))
     .catch(() => {})));
   if (token === paginate.n) {
     paintExactChanges();
     renderRail();
   }
 }
+// Text on a PDF page is a scatter of absolutely placed words. When a drag passes over the gaps
+// between them the browser has no text under the pointer and jumps the selection to wherever
+// the page's text happens to start or end, often half the page away. pdf.js's own viewer
+// avoids this with an "end of content" block: while selecting it covers the page *under* the
+// words and sits right after the word being dragged to, so blank space extends the selection
+// up to that word instead.
+const textLayers = new Map(); // text layer -> its end-of-content block
+let lastExactRange = null;
+function addEndOfContent(layer) {
+  const end = document.createElement("div");
+  end.className = "endOfContent";
+  layer.append(end);
+  textLayers.set(layer, end);
+  layer.addEventListener("mousedown", () => layer.classList.add("selecting"));
+}
+function resetEndOfContent(layer, end) {
+  layer.append(end);
+  end.style.width = end.style.height = "";
+  layer.classList.remove("selecting");
+}
+function steadyExactSelection() {
+  for (const layer of [...textLayers.keys()]) if (!layer.isConnected) textLayers.delete(layer);
+  if (!textLayers.size) return;
+  const sel = document.getSelection();
+  if (!sel || sel.rangeCount === 0) {
+    textLayers.forEach((end, layer) => resetEndOfContent(layer, end));
+    lastExactRange = null;
+    return;
+  }
+  const range = sel.getRangeAt(0);
+  textLayers.forEach((end, layer) => {
+    if (range.intersectsNode(layer)) layer.classList.add("selecting");
+    else resetEndOfContent(layer, end);
+  });
+  // the end being dragged: the start when the drag goes backwards, else the end
+  const backwards = lastExactRange && (range.compareBoundaryPoints(Range.END_TO_END, lastExactRange) === 0 ||
+    range.compareBoundaryPoints(Range.START_TO_END, lastExactRange) === 0);
+  let anchor = backwards ? range.startContainer : range.endContainer;
+  if (anchor.nodeType === Node.TEXT_NODE) anchor = anchor.parentNode;
+  const layer = anchor.closest && anchor.closest(".textLayer");
+  const end = layer && textLayers.get(layer);
+  if (end && anchor !== layer && anchor !== end && anchor.parentNode) {
+    end.style.width = `${layer.offsetWidth}px`;
+    end.style.height = `${layer.offsetHeight}px`;
+    anchor.parentNode.insertBefore(end, backwards ? anchor : anchor.nextSibling);
+  }
+  lastExactRange = range.cloneRange();
+}
+document.addEventListener("pointerup", () => {
+  textLayers.forEach((end, layer) => resetEndOfContent(layer, end));
+  lastExactRange = null;
+});
+
 // The block ids of a selection made on exact pages: find each selected line in the HTML copy.
 function blocksForText(text) {
   const norm = (t) => t.replace(/\s+/g, " ").trim();
@@ -977,6 +1031,7 @@ $("sel-clear").addEventListener("click", clearSelection);
 // Any way of selecting text (drag, double/triple click, shift+arrows) ends up here.
 let selTimer = null;
 document.addEventListener("selectionchange", () => {
+  steadyExactSelection();
   clearTimeout(selTimer);
   selTimer = setTimeout(captureSelection, 120);
 });
